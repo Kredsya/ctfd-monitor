@@ -42,6 +42,7 @@ API 토큰은 `CTFD_MONITOR_TOKEN`에 넣습니다. 토큰이 사용자/비밀�
 
 | 키 | 기본값 / 의미 |
 | --- | --- |
+| `account_mode` | auto, teams 또는 users. 개인전은 users를 명시할 수 있습니다 |
 | `url`, `name` | 대회 URL, 화면 제목 |
 | `root`, `state` | 작업 루트, 선택적 상태 경로 |
 | `poll_interval` | 5초, 실패 시 최대 120초 백오프 |

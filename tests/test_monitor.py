@@ -25,6 +25,45 @@ class Tests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 m.configure(p)
 
+    def test_cookie_login_and_route_cache(self):
+        counts = {}
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *args): pass
+            def do_POST(self):
+                body = self.rfile.read(int(self.headers.get('Content-Length', 0)))
+                if self.path == '/api/v2/auth/login':
+                    self.send_response(404); self.end_headers(); return
+                if self.path != '/login' or b'nonce=test-nonce' not in body:
+                    self.send_response(403); self.end_headers(); return
+                self.send_response(200)
+                self.send_header('Set-Cookie', 'session=test; Path=/')
+                self.end_headers()
+            def do_GET(self):
+                counts[self.path] = counts.get(self.path, 0) + 1
+                if self.path == '/login':
+                    self.send_response(200); self.end_headers()
+                    self.wfile.write(b'<input name="nonce" value="test-nonce">'); return
+                if self.path == '/missing':
+                    self.send_response(404); self.end_headers(); return
+                if self.headers.get('Cookie') != 'session=test':
+                    self.send_response(401); self.end_headers(); return
+                self.send_response(200); self.end_headers()
+                self.wfile.write(b'{"success":true,"data":{"id":1}}')
+        server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with patch.object(m, 'TOKEN', ''):
+                client = m.CTFdClient(f'http://127.0.0.1:{server.server_port}', 'user', 'password')
+                client.login()
+                self.assertTrue(client.logged_in)
+                for _ in range(2):
+                    client.request_json_routes(('/missing', '/available'))
+                self.assertEqual(counts['/missing'], 1)
+                self.assertEqual(counts['/available'], 2)
+        finally:
+            server.shutdown(); server.server_close(); thread.join()
+
     def test_redirect_removes_credentials_and_local_files_rejected(self):
         request = m.urllib.request.Request('https://ctf.example/a', headers={'Authorization': 'Token secret', 'Cookie': 'session=secret'})
         redirected = m.SafeRedirect().redirect_request(request, None, 302, 'Found', {}, 'https://cdn.example/a')

@@ -4,9 +4,9 @@
 from __future__ import annotations
 
 from .archives import extract
+from .config import load_profile
 
 import argparse
-import tomllib
 import concurrent.futures
 import copy
 import fcntl
@@ -52,6 +52,7 @@ AUTO_EXTRACT = False
 MAX_DOWNLOAD_BYTES = 2 * 1024**3
 HEADLESS = False
 CONTEST_END = ""
+ACCOUNT_MODE = "auto"
 POLL_INTERVAL = 0.5 if TEST_MODE else 5.0
 BADGE_TTL = 5.0 if TEST_MODE else 300.0
 DONE_TTL = 5.0
@@ -353,6 +354,7 @@ class CTFdClient:
         self.cookies = http.cookiejar.CookieJar()
         self.opener = urllib.request.build_opener(SafeRedirect(), urllib.request.HTTPCookieProcessor(self.cookies))
         self.logged_in = False
+        self.selected_routes: dict[tuple[str, ...], str] = {}
 
     def request_json(self, path: str, *, method: str = "GET", payload: dict[str, object] | None = None) -> dict[str, object]:
         data = None
@@ -375,6 +377,8 @@ class CTFdClient:
                 result = json.loads(body)
             except json.JSONDecodeError:
                 result = {}
+            if not isinstance(result, dict):
+                result = {}
             message = str(result.get("message") or result.get("code") or error.reason)
             raise ApiError(path, error.code, message, str(result.get("code") or "")) from error
         except (urllib.error.URLError, TimeoutError) as error:
@@ -387,9 +391,13 @@ class CTFdClient:
     def request_json_routes(self, paths: tuple[str, ...]) -> dict[str, object]:
         """Try API route variants, falling back only when a route is unavailable."""
         last_error: ApiError | None = None
-        for path in paths:
+        selected = self.selected_routes.get(paths)
+        ordered = (selected,) + tuple(p for p in paths if p != selected) if selected else paths
+        for path in ordered:
             try:
-                return self.request_json(path)
+                result = self.request_json(path)
+                self.selected_routes[paths] = path
+                return result
             except ApiError as error:
                 last_error = error
                 route_unavailable = error.code == "route_not_allowed" or error.status in {404, 405}
@@ -1284,6 +1292,12 @@ class Monitor:
             shutil.rmtree(transaction, ignore_errors=True)
 
     def fetch_team(self) -> dict[str, object]:
+        if ACCOUNT_MODE != "auto":
+            try:
+                data = self.client.request_json(f"/api/v1/{ACCOUNT_MODE}/me").get("data")
+                return data if isinstance(data, dict) else {}
+            except ApiError:
+                return {}
         try:
             data = self.client.request_json("/api/v1/teams/me").get("data")
             return data if isinstance(data, dict) else {}
@@ -1335,7 +1349,8 @@ class Monitor:
 
     def fetch_team_solves(self) -> dict[int, dict[str, object]]:
         try:
-            data = self.client.request_json_routes(("/api/v1/teams/me/solves", "/api/v1/users/me/solves")).get("data")
+            routes = (f"/api/v1/{ACCOUNT_MODE}/me/solves",) if ACCOUNT_MODE != "auto" else ("/api/v1/teams/me/solves", "/api/v1/users/me/solves")
+            data = self.client.request_json_routes(routes).get("data")
         except ApiError:
             return {}
         solves: dict[int, dict[str, object]] = {}
@@ -2098,29 +2113,26 @@ def headless_main() -> int:
 def configure(path: Path | None) -> None:
     global BASE_URL, USERNAME, PASSWORD, TOKEN, TITLE, BASE_DIR, STATE_DIR
     global KOTH_ENABLED, CODEX_ENABLED, HELPER_FILES, AGENTS_TEMPLATE, POLL_INTERVAL, MAX_WORKERS
-    global AUTO_EXTRACT, MAX_DOWNLOAD_BYTES, CONTEST_END
-    config = tomllib.loads(path.read_text()) if path else {}
-    allowed = {'name', 'url', 'root', 'state', 'poll_interval', 'max_workers', 'koth', 'codex_usage', 'helpers', 'agents_template', 'username_env', 'password_env', 'token_env', 'auto_extract', 'max_download_bytes', 'contest_end'}
-    unknown = set(config) - allowed
-    if unknown:
-        raise ValueError(f"Unknown configuration keys: {', '.join(sorted(unknown))}")
+    global AUTO_EXTRACT, MAX_DOWNLOAD_BYTES, CONTEST_END, ACCOUNT_MODE
+    config = load_profile(path)
     anchor = path.resolve().parent if path else Path.cwd()
     def local(value):
         p = Path(value).expanduser()
         return (anchor / p).resolve()
-    BASE_URL = os.environ.get('CTFD_MONITOR_URL', config.get('url', BASE_URL)).rstrip('/')
+    BASE_URL = os.environ.get('CTFD_MONITOR_URL', config.get('url', '')).rstrip('/')
     parsed = urllib.parse.urlsplit(BASE_URL)
     if parsed.scheme not in {'http', 'https'} or not parsed.netloc or parsed.username or parsed.query or parsed.fragment:
         raise ValueError('Set a valid http(s) URL in the profile or CTFD_MONITOR_URL')
     TITLE = config.get('name', 'CTFd Monitor')
+    ACCOUNT_MODE = config.get('account_mode', 'auto')
     USERNAME = os.environ.get(config.get('username_env', 'CTFD_MONITOR_USER'), '')
     PASSWORD = os.environ.get(config.get('password_env', 'CTFD_MONITOR_PASSWORD'), '')
     TOKEN = os.environ.get(config.get('token_env', 'CTFD_MONITOR_TOKEN'), '')
     BASE_DIR = local(os.environ.get('CTFD_MONITOR_ROOT', config.get('root', 'workspace')))
     identity = hashlib.sha256(BASE_URL.encode()).hexdigest()[:12]
     STATE_DIR = local(os.environ.get('CTFD_MONITOR_STATE', config.get('state', str(BASE_DIR / '.ctfd-monitor' / identity))))
-    POLL_INTERVAL = float(config.get('poll_interval', POLL_INTERVAL))
-    MAX_WORKERS = int(config.get('max_workers', MAX_WORKERS))
+    POLL_INTERVAL = float(config.get('poll_interval', 0.5 if TEST_MODE else 5.0))
+    MAX_WORKERS = int(config.get('max_workers', 4))
     if not math.isfinite(POLL_INTERVAL) or POLL_INTERVAL <= 0 or MAX_WORKERS < 1:
         raise ValueError('poll_interval and max_workers must be positive')
     for key in ('koth', 'codex_usage'):
@@ -2178,6 +2190,7 @@ def diagnose(network: bool) -> int:
                     checks[label] = f'unverified (HTTP {error.status})'
                 except Exception as error:
                     checks[label] = f'unverified ({type(error).__name__})'
+            report["selected_routes"] = list(client.selected_routes.values())
     print(json.dumps(report, ensure_ascii=False, indent=2))
     return 1 if failed else 0
 

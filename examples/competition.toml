@@ -1,6 +1,6 @@
 name = "Example CTF"
 url = "https://ctf.example.org"
-root = "../workspace/example"
+root = "workspace/example"
 poll_interval = 5.0
 max_workers = 4
 koth = false
@@ -10,3 +10,8 @@ helpers = []
 # username_env = "CTFD_MONITOR_USER"
 # password_env = "CTFD_MONITOR_PASSWORD"
 # token_env = "CTFD_MONITOR_TOKEN"
+
+account_mode = "auto" # teams or users can be set explicitly
+# contest_end = "2026-11-01T18:00:00+09:00"
+auto_extract = false
+max_download_bytes = 2147483648
