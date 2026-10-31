@@ -38,6 +38,15 @@ class IntegrationTests(unittest.TestCase):
                 self.assertEqual(json.loads(probe.stdout)['checks']['challenges'], 'ok')
                 for _ in range(2):
                     process = subprocess.Popen(command + ['--headless', 'run'], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                    lines = []
+                    live = threading.Event()
+                    def collect():
+                        for line in process.stdout:
+                            lines.append(line)
+                            if json.loads(line)['status'] == 'LIVE':
+                                live.set()
+                    reader = threading.Thread(target=collect, daemon=True)
+                    reader.start()
                     try:
                         deadline = time.monotonic() + 10
                         attachment = root / 'work/1_Demo/chall/deploy/demo.txt'
@@ -47,10 +56,15 @@ class IntegrationTests(unittest.TestCase):
                             if process.poll() is not None: break
                             time.sleep(0.05)
                         self.assertEqual(attachment.read_bytes(), b'attachment')
-                        time.sleep(0.2)
+                        self.assertTrue(live.wait(10), "monitor did not report LIVE")
                     finally:
                         process.send_signal(signal.SIGTERM)
-                        out, err = process.communicate(timeout=10)
+                        process.wait(timeout=10)
+                        reader.join(timeout=5)
+                        err = process.stderr.read()
+                        out = "".join(lines)
+                        process.stdout.close()
+                        process.stderr.close()
                     self.assertEqual(process.returncode, 0, err)
                     self.assertTrue(any(json.loads(line)['status'] == 'LIVE' for line in out.splitlines()), out)
                 events = next((root / 'work/.ctfd-monitor').glob('*/events.jsonl')).read_text().splitlines()
