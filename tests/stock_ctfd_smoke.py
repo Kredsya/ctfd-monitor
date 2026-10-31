@@ -9,11 +9,12 @@ import time
 import urllib.request
 import uuid
 
-from ctfd_monitor.client import CTFdClient
+from ctfd_monitor.client import ApiError, CTFdClient
 from ctfd_monitor.installer import verify
 
 IMAGE = 'ctfd/ctfd:3.8.9@sha256:84aff1e50b6a6f931b5da90c6f5b7c623ba4583217a9b00e9d4c1b7c53b9739f'
 SEED = '''
+from datetime import datetime, timedelta
 from CTFd import create_app
 from CTFd.models import db, Users, Challenges, UserTokens
 from CTFd.utils import set_config
@@ -25,6 +26,7 @@ with app.app_context():
     db.session.add(user)
     db.session.commit()
     db.session.add(UserTokens(user_id=user.id,value='ctfd_local_smoke_test_only'))
+    db.session.add(UserTokens(user_id=user.id,value='ctfd_expired_fixture_only',expiration=datetime.utcnow()-timedelta(days=1)))
     db.session.add(Challenges(name='Smoke',description='Read-only test challenge',category='misc',value=100,type='standard',state='visible'))
     db.session.commit()
 '''
@@ -73,6 +75,20 @@ def main():
             assert client.request_json('/api/v1/challenges/1')['data']['name'] == 'Smoke'
             assert isinstance(client.request_json('/api/v1/users/me/solves')['data'], list)
             print(mode + ': authentication, challenge list/detail and solves passed')
+        for bad_token in ('ctfd_invalid_fixture_only','ctfd_expired_fixture_only'):
+            try:
+                CTFdClient(url, '', '', bad_token).login()
+            except ApiError as error:
+                assert error.status == 401
+            else:
+                raise AssertionError('Invalid/expired token was accepted')
+        try:
+            CTFdClient(url, 'monitor-test', 'wrong-password').login()
+        except ApiError as error:
+            assert error.status == 401
+        else:
+            raise AssertionError('Invalid password was accepted')
+        print('invalid token, expired token and invalid password rejected')
         docker('exec', '-i', name, 'python', '-', input=TEAM_SEED, timeout=30)
         docker('restart', name, timeout=30)
         port = docker('port', name, '8000/tcp').strip().rsplit(':', 1)[1]
@@ -85,13 +101,13 @@ def main():
                 time.sleep(1)
         else:
             raise RuntimeError('Stock CTFd did not restart')
-        client = CTFdClient(url, '', '', 'ctfd_local_smoke_test_only')
-        user, _ = verify(client)
-        assert user['team_id']
-        assert client.request_json('/api/v1/teams/me')['data']['name'] == 'Monitor team'
-        assert isinstance(client.request_json('/api/v1/teams/me/solves')['data'], list)
-        print('teams: account detection, team profile and solves passed')
-
+        for mode in ('token', 'password'):
+            client = CTFdClient(url, 'monitor-test' if mode == 'password' else '', 'local-test-password' if mode == 'password' else '', 'ctfd_local_smoke_test_only' if mode == 'token' else '')
+            user, _ = verify(client)
+            assert user['team_id']
+            assert client.request_json('/api/v1/teams/me')['data']['name'] == 'Monitor team'
+            assert isinstance(client.request_json('/api/v1/teams/me/solves')['data'], list)
+            print('teams/' + mode + ': account detection, team profile and solves passed')
     finally:
         subprocess.run(prefix + ['rm', '-f', name], capture_output=True)
 

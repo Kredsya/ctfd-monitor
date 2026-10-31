@@ -11,3 +11,7 @@ dist/
 competition.local.toml
 
 .ctfd-monitor-local/
+
+.coverage
+htmlcov/
+test-results/

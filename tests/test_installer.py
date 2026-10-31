@@ -82,7 +82,10 @@ class InstallerTests(unittest.TestCase):
                 if not self.authed():
                     self.reply(401, None); return
                 user = {'id': 1, 'name': 'Player', 'team_id': None}
-                routes = {'/api/v1/users/me': user, '/api/v1/challenges': [], '/api/v1/users/me/solves': [], '/api/v1/scoreboard': []}
+                if self.path == '/files/provided.txt':
+                    self.send_response(200); self.end_headers(); self.wfile.write(b'provided attachment'); return
+                challenge = {'id':1,'name':'Installed problem','category':'misc','description':'fixture description','value':100,'files':['/files/provided.txt']}
+                routes = {'/api/v1/users/me': user, '/api/v1/challenges': [challenge], '/api/v1/challenges/1': challenge, '/api/v1/users/me/solves': [], '/api/v1/scoreboard': []}
                 self.reply(200 if self.path in routes else 404, routes.get(self.path))
         server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
         worker = threading.Thread(target=server.serve_forever, daemon=True)
@@ -91,8 +94,9 @@ class InstallerTests(unittest.TestCase):
             with tempfile.TemporaryDirectory() as d:
                 root = Path(d)
                 shutil.copytree(REPO / 'src', root / 'src', ignore=shutil.ignore_patterns('__pycache__', '*.egg-info'))
-                for name in ('install.py', 'ctfd-monitor.py'):
-                    shutil.copy(REPO / name, root / name)
+                for name in ('install.py', 'ctfd-monitor.py', '22.sh', '25.sh'):
+                    if (REPO / name).is_file():
+                        shutil.copy2(REPO / name, root / name)
                 env = {k:v for k,v in os.environ.items() if not k.startswith('CTFD_MONITOR_') and k != 'PYTHONPATH'}
                 for mode in ('1', '2'):
                     with self.subTest(mode=mode):
@@ -130,6 +134,13 @@ class InstallerTests(unittest.TestCase):
                             errors = process.stderr.read()
                             process.stdout.close(); process.stderr.close()
                         self.assertEqual(process.returncode, 0, errors)
+                        problem = (profile.parent / config['root']).resolve() / '1_Installed_problem'
+                        self.assertEqual((problem/'chall/deploy/provided.txt').read_bytes(),b'provided attachment')
+                        self.assertTrue((problem/'chall/AGENTS.md').is_file())
+                        for helper in ('22.sh','25.sh'):
+                            self.assertTrue((problem/helper).is_file(), f'Installed monitor did not provision {helper}')
+                            self.assertEqual((problem/helper).read_bytes(), (REPO/'tests/fixtures/original'/helper).read_bytes())
+
                 # The documented bare command must also work in an actual terminal.
                 master, slave = pty.openpty()
                 fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 60, 120, 0, 0))

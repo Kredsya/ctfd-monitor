@@ -14,10 +14,22 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
-      - run: python -m pip install build
+      - run: python -m pip install build coverage
       - run: python -m build
       - run: python -m pip install dist/*.whl
-      - run: python -m unittest discover -s tests -v
+      - run: sudo apt-get update
+      - run: sudo apt-get install -y tmux
+      - run: python -m coverage run --branch --source=ctfd_monitor tests/run_suite.py
+      - if: always()
+        run: python tests/mutation_smoke.py
+      - if: always()
+        run: python -m coverage xml -o test-results/coverage.xml
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-evidence-${{ matrix.python }}
+          path: test-results/
+
       - run: ctfd-monitor --help
       - uses: actions/upload-artifact@v4
         with:

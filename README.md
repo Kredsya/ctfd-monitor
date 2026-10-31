@@ -67,8 +67,11 @@ python3 ctfd-monitor.py --headless  # JSON 상태 로그
 표준 CTFd v1 API와 사용자 토큰·일반 로그인, 일부 ACDC v2 경로를 지원합니다. SSO/MFA/CAPTCHA 로그인, 사이트 비밀번호, 모든 플러그인 자동 설정, Windows/macOS는 지원하지 않습니다. 임의 API 형식에 맞춰 코드를 자동 생성하거나 LLM을 호출하지 않습니다.
 
 ```sh
-PYTHONPATH=src python3 -m unittest discover -s tests -v
+python -m build
+PYTHONPATH=src python3 tests/run_suite.py
 ```
+
+전체 검사 조건·실패 판정·개발용 의존성은 [테스트 매트릭스](tests/TEST-MATRIX.md)에 기록합니다. 이번 테스트 재작성 브랜치는 v0.2.0의 실패를 드러내며 제품 수정이나 새 배포를 포함하지 않습니다.
 
 테스트는 JSON 헤더가 빠진 토큰 요청을 거부하는 서버, 폼 로그인, 다운로드·재시작, 대화형 설치의 두 인증 방식, 비밀 입력 비표시, 설정 파일 권한과 실패 시 기존 설정 보존을 검증합니다. GitHub Actions는 Python 3.12/3.13에서 wheel/sdist를 빌드하고 설치하여 검사합니다. 별도 작업에서는 공식 CTFd 3.8.9 이미지(고정 digest)로 토큰·비밀번호 인증, 문제 목록·상세 및 풀이 API를 검증합니다.
 
