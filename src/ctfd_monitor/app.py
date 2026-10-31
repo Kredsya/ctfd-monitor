@@ -434,7 +434,10 @@ class CTFdClient:
         return "; ".join(f"{cookie.name}={cookie.value}" for cookie in self.cookies)
 
     def open_file(self, url: str, timeout: int = 10):
-        request = urllib.request.Request(urllib.parse.urljoin(self.base_url + "/", url), headers={"User-Agent": "ctfd-monitor/1.0"})
+        target = urllib.parse.urljoin(self.base_url + "/", url)
+        if urllib.parse.urlsplit(target).scheme not in {"http", "https"}:
+            raise ValueError("attachments require an HTTP(S) URL")
+        request = urllib.request.Request(target, headers={"User-Agent": "ctfd-monitor/1.0"})
         return self.opener.open(request, timeout=timeout)
 
 

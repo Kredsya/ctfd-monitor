@@ -25,6 +25,14 @@ class Tests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 m.configure(p)
 
+    def test_redirect_removes_credentials_and_local_files_rejected(self):
+        request = m.urllib.request.Request('https://ctf.example/a', headers={'Authorization': 'Token secret', 'Cookie': 'session=secret'})
+        redirected = m.SafeRedirect().redirect_request(request, None, 302, 'Found', {}, 'https://cdn.example/a')
+        self.assertIsNone(redirected.get_header('Authorization'))
+        self.assertIsNone(redirected.get_header('Cookie'))
+        with self.assertRaises(ValueError):
+            m.CTFdClient('https://ctf.example', '', '').open_file('file:///etc/passwd')
+
     def test_http_token_fallback_and_external_cookie(self):
         seen = []
         class Handler(BaseHTTPRequestHandler):
