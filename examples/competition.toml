@@ -1,0 +1,12 @@
+name = "Example CTF"
+url = "https://ctf.example.org"
+root = "../workspace/example"
+poll_interval = 5.0
+max_workers = 4
+koth = false
+codex_usage = false
+helpers = []
+# agents_template = "agents-template.txt"
+# username_env = "CTFD_MONITOR_USER"
+# password_env = "CTFD_MONITOR_PASSWORD"
+# token_env = "CTFD_MONITOR_TOKEN"
