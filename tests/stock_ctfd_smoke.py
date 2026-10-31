@@ -29,6 +29,21 @@ with app.app_context():
     db.session.commit()
 '''
 
+TEAM_SEED = """
+from CTFd import create_app
+from CTFd.models import db, Users, Teams
+from CTFd.utils import set_config
+app=create_app()
+with app.app_context():
+    set_config('user_mode', 'teams')
+    team=Teams(name='Monitor team',email='team@example.invalid',password='local-test-password')
+    db.session.add(team)
+    db.session.flush()
+    user=Users.query.filter_by(name='monitor-test').one()
+    user.team_id=team.id
+    db.session.commit()
+"""
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -58,6 +73,25 @@ def main():
             assert client.request_json('/api/v1/challenges/1')['data']['name'] == 'Smoke'
             assert isinstance(client.request_json('/api/v1/users/me/solves')['data'], list)
             print(mode + ': authentication, challenge list/detail and solves passed')
+        docker('exec', '-i', name, 'python', '-', input=TEAM_SEED, timeout=30)
+        docker('restart', name, timeout=30)
+        port = docker('port', name, '8000/tcp').strip().rsplit(':', 1)[1]
+        url = 'http://127.0.0.1:' + port
+        for _ in range(60):
+            try:
+                with urllib.request.urlopen(url + '/login', timeout=2) as response:
+                    if response.status == 200: break
+            except (OSError, TimeoutError):
+                time.sleep(1)
+        else:
+            raise RuntimeError('Stock CTFd did not restart')
+        client = CTFdClient(url, '', '', 'ctfd_local_smoke_test_only')
+        user, _ = verify(client)
+        assert user['team_id']
+        assert client.request_json('/api/v1/teams/me')['data']['name'] == 'Monitor team'
+        assert isinstance(client.request_json('/api/v1/teams/me/solves')['data'], list)
+        print('teams: account detection, team profile and solves passed')
+
     finally:
         subprocess.run(prefix + ['rm', '-f', name], capture_output=True)
 
