@@ -59,7 +59,7 @@ class CTFdClient:
         if time.monotonic() < self.retry_until:
             raise ApiError(path, 429, "waiting for server Retry-After")
         data = None
-        headers = {"Accept": "application/json", "User-Agent": "ctfd-monitor/1.0"}
+        headers = {"Accept": "application/json", "Content-Type": "application/json", "User-Agent": "ctfd-monitor/0.2.0"}
         if self.token:
             headers["Authorization"] = f"Token {self.token}"
         if payload is not None:
@@ -156,7 +156,12 @@ class CTFdClient:
         target = urllib.parse.urljoin(self.base_url + "/", url)
         if urllib.parse.urlsplit(target).scheme not in {"http", "https"}:
             raise ValueError("attachments require an HTTP(S) URL")
-        request = urllib.request.Request(target, headers={"User-Agent": "ctfd-monitor/1.0"})
+        headers = {"User-Agent": "ctfd-monitor/0.2.0"}
+        origin = urllib.parse.urlsplit(self.base_url)
+        destination = urllib.parse.urlsplit(target)
+        if self.token and (origin.scheme, origin.netloc) == (destination.scheme, destination.netloc):
+            headers.update({"Authorization": f"Token {self.token}", "Content-Type": "application/json"})
+        request = urllib.request.Request(target, headers=headers)
         return self.opener.open(request, timeout=timeout)
 
 

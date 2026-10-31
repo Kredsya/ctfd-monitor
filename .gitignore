@@ -9,3 +9,5 @@ build/
 dist/
 *.egg-info/
 competition.local.toml
+
+.ctfd-monitor-local/

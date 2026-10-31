@@ -1,3 +1,5 @@
 include README.md
 recursive-include examples *.toml
 recursive-include tests *.py
+
+include install.py ctfd-monitor.py

@@ -15,6 +15,10 @@ class IntegrationTests(unittest.TestCase):
         class Handler(BaseHTTPRequestHandler):
             def log_message(self, *args): pass
             def do_GET(self):
+                if self.headers.get('Authorization') != 'Token test-token' or self.headers.get('Content-Type') != 'application/json':
+                    self.send_response(401); self.end_headers()
+                    self.wfile.write(b'{"success":false}')
+                    return
                 data = {'id': 1, 'name': 'Demo', 'category': 'misc', 'value': 100, 'description': 'hello', 'files': ['/files/demo.txt']}
                 routes = {'/api/v1/users/me': {'id': 7, 'name': 'User'}, '/api/v1/teams/me': {'id': 7, 'name': 'Team'}, '/api/v1/challenges': [data], '/api/v1/challenges/1': data, '/api/v1/teams/me/solves': [], '/api/v1/scoreboard': [{'account_id': 7, 'name': 'Team', 'score': 100, 'pos': 1}]}
                 if self.path == '/files/demo.txt':

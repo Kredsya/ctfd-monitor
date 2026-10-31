@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from .archives import extract
-from .config import load_profile
+from .config import load_profile, load_credentials
 from .client import ApiError, CTFdClient, SafeRedirect
 
 import argparse
@@ -1752,7 +1752,7 @@ def render_resources(resources: dict[str, object], width: int, codex_usage: dict
     left = resource_chart("CPU", cpu, max([cpu, *cpu_values]), resource_series(resources, 1, plot_width_left), left_width, YELLOW, f"{cpu_cores} CORES")
     right = resource_chart("MEMORY", memory, max([memory, *memory_values]), resource_series(resources, 2, plot_width_right), right_width, CYAN, f"{used_gib:.2f} / {total_gib:.2f} GiB")
     chart_lines = [left[index] + " " * gap + right[index] for index in range(len(left))]
-    return boxed("SYSTEM RESOURCES", [codex_usage_line(codex_usage or {}, width - 4), "", *chart_lines], width, YELLOW)
+    return boxed("SYSTEM RESOURCES", ([codex_usage_line(codex_usage or {}, width - 4), ""] if CODEX_ENABLED else []) + chart_lines, width, YELLOW)
 
 
 def render_resources_compact(resources: dict[str, object], width: int, codex_usage: dict[str, object] | None = None) -> list[str]:
@@ -1762,7 +1762,7 @@ def render_resources_compact(resources: dict[str, object], width: int, codex_usa
     total_gib = float(resources.get("total_gib") or 0.0)
     cpu_cores = int(resources.get("cpu_cores") or 1)
     summary = f"CPU {cpu:.1f}% · {cpu_cores} CORES    MEMORY {memory:.1f}% · {used_gib:.2f}/{total_gib:.2f} GiB"
-    return boxed("SYSTEM RESOURCES · COMPACT", [codex_usage_line(codex_usage or {}, width - 4), summary], width, YELLOW)
+    return boxed("SYSTEM RESOURCES · COMPACT", ([codex_usage_line(codex_usage or {}, width - 4)] if CODEX_ENABLED else []) + [summary], width, YELLOW)
 
 
 def render_koth_compact(view: dict[str, object], width: int) -> list[str]:
@@ -1966,6 +1966,13 @@ def configure(path: Path | None) -> None:
     USERNAME = os.environ.get(config.get('username_env', 'CTFD_MONITOR_USER'), '')
     PASSWORD = os.environ.get(config.get('password_env', 'CTFD_MONITOR_PASSWORD'), '')
     TOKEN = os.environ.get(config.get('token_env', 'CTFD_MONITOR_TOKEN'), '')
+    if config.get('credentials_file'):
+        saved = load_credentials(local(config['credentials_file']))
+        # Any explicit environment authentication overrides the saved set as a whole.
+        env_names = [config.get(key + '_env', 'CTFD_MONITOR_' + ('USER' if key == 'username' else key.upper())) for key in ('username', 'password', 'token')]
+        if not any(name in os.environ for name in env_names):
+            USERNAME, PASSWORD, TOKEN = (saved.get(key, '') for key in ('username', 'password', 'token'))
+
     BASE_DIR = local(os.environ.get('CTFD_MONITOR_ROOT', config.get('root', 'workspace')))
     identity = hashlib.sha256(BASE_URL.encode()).hexdigest()[:12]
     STATE_DIR = local(os.environ.get('CTFD_MONITOR_STATE', config.get('state', str(BASE_DIR / '.ctfd-monitor' / identity))))
@@ -2047,7 +2054,7 @@ def cli() -> int:
     global HEADLESS
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--headless', action='store_true', help='Print JSON status lines without terminal control')
-    parser.add_argument('--version', action='version', version='ctfd-monitor 0.1.0')
+    parser.add_argument('--version', action='version', version='ctfd-monitor 0.2.0')
     parser.add_argument('--config', type=Path, help='Competition TOML profile')
     parser.add_argument('command', choices=('run', 'doctor', 'probe'), nargs='?', default='run')
     args = parser.parse_args()

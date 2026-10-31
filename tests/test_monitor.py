@@ -78,6 +78,8 @@ class Tests(unittest.TestCase):
             def log_message(self, *args): pass
             def do_GET(self):
                 seen.append((self.path, self.headers.get('Authorization'), self.headers.get('Cookie')))
+                if self.path.startswith('/api/') and self.headers.get('Content-Type') != 'application/json':
+                    self.send_response(401); self.end_headers(); return
                 if self.path == '/missing':
                     self.send_response(404)
                 else:

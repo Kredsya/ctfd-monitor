@@ -23,3 +23,11 @@ jobs:
         with:
           name: dist-${{ matrix.python }}
           path: dist/*
+  stock-ctfd:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: PYTHONPATH=src python tests/stock_ctfd_smoke.py

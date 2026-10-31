@@ -3,7 +3,7 @@ import math
 import tomllib
 from pathlib import Path
 
-STRINGS = {'name', 'url', 'root', 'state', 'agents_template', 'username_env', 'password_env', 'token_env', 'contest_end', 'account_mode'}
+STRINGS = {'name', 'url', 'root', 'state', 'agents_template', 'username_env', 'password_env', 'token_env', 'contest_end', 'account_mode', 'credentials_file'}
 BOOLEANS = {'koth', 'codex_usage', 'auto_extract'}
 INTEGERS = {'max_workers', 'max_download_bytes'}
 
@@ -28,3 +28,21 @@ def load_profile(path: Path | None) -> dict:
         if key in config and (not config[key] or '=' in config[key] or '\x00' in config[key]):
             raise ValueError(f'{key} must name an environment variable')
     return config
+
+
+def load_credentials(path: Path) -> dict:
+    """Read installer credentials only from a private regular file."""
+    import json
+    import os
+    import stat
+    if path.is_symlink():
+        raise ValueError('credentials_file must not be a symlink')
+    info = path.stat()
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+        raise ValueError('credentials_file must be owned by the current user with permissions 0600')
+    data = json.loads(path.read_text(encoding='utf-8'))
+    if not isinstance(data, dict) or set(data) - {'username', 'password', 'token'}:
+        raise ValueError('Invalid credentials file')
+    if any(not isinstance(value, str) for value in data.values()):
+        raise ValueError('Credential values must be strings')
+    return data
