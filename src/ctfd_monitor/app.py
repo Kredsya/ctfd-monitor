@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from .archives import extract
 from .config import load_profile
+from .client import ApiError, CTFdClient, SafeRedirect
 
 import argparse
 import concurrent.futures
@@ -101,15 +102,6 @@ ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 PARTIAL_BLOCKS = " ▁▂▃▄▅▆▇█"
 
 
-class ApiError(RuntimeError):
-    def __init__(self, path: str, status: int, message: str, code: str = "") -> None:
-        super().__init__(f"{path}: HTTP {status} - {message}")
-        self.path = path
-        self.status = status
-        self.message = message
-        self.code = code
-
-
 class DescriptionParser(HTMLParser):
     BLOCK_TAGS = {
         "address", "article", "blockquote", "br", "div", "h1", "h2", "h3",
@@ -138,17 +130,6 @@ class DescriptionParser(HTMLParser):
         value = html.unescape("".join(self.parts)).replace("\r\n", "\n")
         value = re.sub(r"[ \t]+\n", "\n", value)
         return re.sub(r"\n{3,}", "\n\n", value).strip()
-
-
-class NonceParser(HTMLParser):
-    def __init__(self) -> None:
-        super().__init__()
-        self.nonce = ""
-
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        values = dict(attrs)
-        if tag == "input" and values.get("name") == "nonce" and values.get("value"):
-            self.nonce = str(values["value"])
 
 
 def paint(text: str, color: str, *, bold: bool = False) -> str:
@@ -292,31 +273,6 @@ class InstanceLock:
         self.handle = None
 
 
-def legacy_monitor_running() -> bool:
-    """Detect a monitor started before lock-file support was loaded."""
-    if TEST_MODE:
-        return False
-    script = Path(__file__).resolve()
-    for process in Path("/proc").glob("[0-9]*"):
-        if process.name == str(os.getpid()):
-            continue
-        try:
-            arguments = [value for value in (process / "cmdline").read_bytes().split(b"\0") if value]
-            working_directory = (process / "cwd").resolve()
-        except OSError:
-            continue
-        for argument in arguments[1:]:
-            try:
-                candidate = Path(os.fsdecode(argument))
-                if not candidate.is_absolute():
-                    candidate = working_directory / candidate
-                if candidate.resolve() == script:
-                    return True
-            except (OSError, UnicodeError):
-                continue
-    return False
-
-
 def file_url(entry: object) -> str | None:
     if isinstance(entry, str):
         return entry
@@ -332,121 +288,6 @@ def is_koth_challenge(challenge: object) -> bool:
     if not isinstance(challenge, dict):
         return False
     return str(challenge.get("type") or "").casefold() == "koth_challenge" or str(challenge.get("category") or "").casefold() == "koth"
-
-
-class SafeRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        request = super().redirect_request(req, fp, code, msg, headers, newurl)
-        if request is not None:
-            old = urllib.parse.urlsplit(req.full_url)
-            new = urllib.parse.urlsplit(newurl)
-            if (old.scheme, old.netloc) != (new.scheme, new.netloc):
-                request.remove_header("Authorization")
-                request.remove_header("Cookie")
-        return request
-
-
-class CTFdClient:
-    def __init__(self, base_url: str, username: str, password: str) -> None:
-        self.base_url = base_url.rstrip("/")
-        self.username = username
-        self.password = password
-        self.cookies = http.cookiejar.CookieJar()
-        self.opener = urllib.request.build_opener(SafeRedirect(), urllib.request.HTTPCookieProcessor(self.cookies))
-        self.logged_in = False
-        self.selected_routes: dict[tuple[str, ...], str] = {}
-
-    def request_json(self, path: str, *, method: str = "GET", payload: dict[str, object] | None = None) -> dict[str, object]:
-        data = None
-        headers = {"Accept": "application/json", "User-Agent": "ctfd-monitor/1.0"}
-        if TOKEN:
-            headers["Authorization"] = f"Token {TOKEN}"
-        if payload is not None:
-            data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-            headers["Content-Type"] = "application/json"
-        request = urllib.request.Request(urllib.parse.urljoin(self.base_url + "/", path.lstrip("/")), data=data, headers=headers, method=method)
-        try:
-            with self.opener.open(request, timeout=30) as response:
-                try:
-                    result = json.load(response)
-                except (ValueError, UnicodeError) as error:
-                    raise ApiError(path, 502, "expected a JSON response") from error
-        except urllib.error.HTTPError as error:
-            body = error.read().decode("utf-8", errors="replace")
-            try:
-                result = json.loads(body)
-            except json.JSONDecodeError:
-                result = {}
-            if not isinstance(result, dict):
-                result = {}
-            message = str(result.get("message") or result.get("code") or error.reason)
-            raise ApiError(path, error.code, message, str(result.get("code") or "")) from error
-        except (urllib.error.URLError, TimeoutError) as error:
-            raise ApiError(path, 0, str(error)) from error
-        if not isinstance(result, dict) or result.get("success") is not True:
-            message = result.get("message") if isinstance(result, dict) else result
-            raise ApiError(path, 400, str(message or "request failed"))
-        return result
-
-    def request_json_routes(self, paths: tuple[str, ...]) -> dict[str, object]:
-        """Try API route variants, falling back only when a route is unavailable."""
-        last_error: ApiError | None = None
-        selected = self.selected_routes.get(paths)
-        ordered = (selected,) + tuple(p for p in paths if p != selected) if selected else paths
-        for path in ordered:
-            try:
-                result = self.request_json(path)
-                self.selected_routes[paths] = path
-                return result
-            except ApiError as error:
-                last_error = error
-                route_unavailable = error.code == "route_not_allowed" or error.status in {404, 405}
-                if not route_unavailable:
-                    raise
-        if last_error is not None:
-            raise last_error
-        raise ValueError("at least one API route is required")
-
-    def login(self) -> dict[str, object]:
-        if TOKEN:
-            result = self.request_json("/api/v1/users/me")
-            self.logged_in = True
-            return result
-        try:
-            result = self.request_json("/api/v2/auth/login", method="POST", payload={"name": self.username, "password": self.password})
-            self.logged_in = True
-            return result
-        except ApiError as error:
-            if error.status not in {404, 405}:
-                raise
-        login_url = urllib.parse.urljoin(self.base_url + "/", "login")
-        try:
-            with self.opener.open(login_url, timeout=30) as response:
-                page = response.read().decode("utf-8", errors="replace")
-        except urllib.error.URLError as error:
-            raise ApiError("/login", 0, str(error)) from error
-        parser = NonceParser()
-        parser.feed(page)
-        form = urllib.parse.urlencode({"name": self.username, "password": self.password, "nonce": parser.nonce}).encode("utf-8")
-        request = urllib.request.Request(login_url, data=form, headers={"Content-Type": "application/x-www-form-urlencoded", "User-Agent": "ctfd-monitor/1.0"})
-        try:
-            with self.opener.open(request, timeout=30) as response:
-                response.read(1)
-            me = self.request_json("/api/v1/users/me")
-        except (urllib.error.URLError, ApiError) as error:
-            raise ApiError("/login", 401, "login failed") from error
-        self.logged_in = True
-        return {"success": True, "user": me.get("data", {})}
-
-    def cookie_header(self) -> str:
-        return "; ".join(f"{cookie.name}={cookie.value}" for cookie in self.cookies)
-
-    def open_file(self, url: str, timeout: int = 10):
-        target = urllib.parse.urljoin(self.base_url + "/", url)
-        if urllib.parse.urlsplit(target).scheme not in {"http", "https"}:
-            raise ValueError("attachments require an HTTP(S) URL")
-        request = urllib.request.Request(target, headers={"User-Agent": "ctfd-monitor/1.0"})
-        return self.opener.open(request, timeout=timeout)
 
 
 @dataclass
@@ -576,8 +417,8 @@ class Monitor:
     def __init__(self, state: SharedState, stop: threading.Event) -> None:
         self.state = state
         self.stop = stop
-        self.client = CTFdClient(BASE_URL, USERNAME, PASSWORD)
-        self.koth_client = CTFdClient(BASE_URL, USERNAME, PASSWORD)
+        self.client = CTFdClient(BASE_URL, USERNAME, PASSWORD, TOKEN)
+        self.koth_client = CTFdClient(BASE_URL, USERNAME, PASSWORD, TOKEN)
         self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS)
         self.previous = read_json(CURRENT_FILE, {"challenges": {}, "team": {}})
         self.manifest = read_json(MANIFEST_FILE, {})
@@ -1184,9 +1025,6 @@ class Monitor:
                 raise DownloadCancelled("download cancelled")
             old_hash = sha256_file(destination) if destination.is_file() else ""
             manifest_key = self.manifest_key(int(challenge["id"]), file_info["local_name"])
-            with self.manifest_lock:
-                existing_entry = copy.deepcopy(self.manifest.get(manifest_key))
-            expected_old_hash = str(existing_entry.get("sha256") or "") if isinstance(existing_entry, dict) else ""
             if destination.is_file() and new_hash != old_hash:
                 self.archive_existing(int(challenge["id"]), destination)
             if self.stop.is_set():
@@ -1569,7 +1407,7 @@ class Monitor:
                 with self.state.lock:
                     self.state.status = "STALE"
                 self.add_event("ERROR", str(error))
-            self.stop.wait(min(120, POLL_INTERVAL * 2 ** min(failures, 5)))
+            self.stop.wait(max(0, self.client.retry_until - time.monotonic(), min(120, POLL_INTERVAL * 2 ** min(failures, 5))))
         self.executor.shutdown(wait=True, cancel_futures=True)
 
 
@@ -2174,7 +2012,7 @@ def diagnose(network: bool) -> int:
         checks['helpers'] = str(error)
     failed = any(v != 'ok' for v in checks.values())
     if network and not failed:
-        client = CTFdClient(BASE_URL, USERNAME, PASSWORD)
+        client = CTFdClient(BASE_URL, USERNAME, PASSWORD, TOKEN)
         try:
             client.login()
             checks['login'] = 'ok'
@@ -2185,7 +2023,17 @@ def diagnose(network: bool) -> int:
             for label, routes in {'challenges': ('/api/v1/challenges', '/api/v2/challenges'), 'account': ('/api/v1/users/me',), 'team': ('/api/v1/teams/me',), 'scoreboard': ('/api/v1/scoreboard', '/api/v2/scoreboard/full')}.items():
                 try:
                     result = client.request_json_routes(routes)
-                    checks[label] = 'ok' if result.get('data') is not None else 'empty'
+                    data = result.get('data')
+                    expected = list if label in {'challenges', 'scoreboard'} else dict
+                    checks[label] = 'ok' if isinstance(data, expected) else 'unexpected response'
+                    if label == 'challenges' and isinstance(data, list):
+                        if data and isinstance(data[0], dict) and isinstance(data[0].get('id'), int):
+                            number = data[0]['id']
+                            detail = client.request_json_routes((f'/api/v1/challenges/{number}', f'/api/v2/challenges/{number}')).get('data')
+                            checks['challenge_detail'] = 'ok' if isinstance(detail, dict) else 'unexpected response'
+                        else:
+                            checks['challenge_detail'] = 'unverified (no accessible challenges)'
+
                 except ApiError as error:
                     checks[label] = f'unverified (HTTP {error.status})'
                 except Exception as error:

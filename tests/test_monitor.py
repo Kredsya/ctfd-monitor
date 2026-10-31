@@ -90,7 +90,7 @@ class Tests(unittest.TestCase):
         try:
             url = f'http://127.0.0.1:{server.server_port}'
             with patch.object(m, 'TOKEN', 'test-token'):
-                client = m.CTFdClient(url, '', '')
+                client = m.CTFdClient(url, '', '', 'test-token')
                 client.login()
                 client.request_json_routes(('/missing', '/available'))
                 self.assertEqual(seen[0][1], 'Token test-token')

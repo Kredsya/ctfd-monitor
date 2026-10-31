@@ -45,7 +45,7 @@ API 토큰은 `CTFD_MONITOR_TOKEN`에 넣습니다. 토큰이 사용자/비밀�
 | `account_mode` | auto, teams 또는 users. 개인전은 users를 명시할 수 있습니다 |
 | `url`, `name` | 대회 URL, 화면 제목 |
 | `root`, `state` | 작업 루트, 선택적 상태 경로 |
-| `poll_interval` | 5초, 실패 시 최대 120초 백오프 |
+| `poll_interval` | 5초, 실패 시 최대 120초 백오프, 429 Retry-After 대기 적용 |
 | `max_workers` | 다운로드 작업자 4개 |
 | `max_download_bytes` | 다운로드 및 압축 해제 한도 2147483648 바이트 |
 | `auto_extract` | false |
@@ -62,7 +62,7 @@ API 토큰은 `CTFD_MONITOR_TOKEN`에 넣습니다. 토큰이 사용자/비밀�
 1. 이 문서와 예제 프로필을 읽고 URL·인증 방식·작업 경로를 확정합니다.
 2. 프로필을 만들고 `doctor`, `probe`를 실행합니다. 비밀 값을 출력하지 않습니다.
 3. 시작 전 검증 불가능한 기능을 기록하고 공개 후 다시 검사합니다.
-4. 특수 API가 필요하면 비밀정보를 제거한 응답 fixture와 테스트를 추가합니다. `CTFdClient`의 경로 대체와 `Monitor.normalize_challenge`를 중심으로 수정합니다.
+4. 특수 API가 필요하면 비밀정보를 제거한 응답 fixture와 테스트를 추가합니다. `client.py`의 `CTFdClient` 경로 대체와 `Monitor.normalize_challenge`를 중심으로 수정합니다.
 5. 테스트 후 실행 명령·상태 경로·미검증 기능을 전달합니다.
 
 ## 개발과 배포
