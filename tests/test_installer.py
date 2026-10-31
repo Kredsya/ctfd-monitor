@@ -1,4 +1,7 @@
 import json
+import fcntl
+import struct
+import termios
 import os
 import pty
 import select
@@ -127,6 +130,31 @@ class InstallerTests(unittest.TestCase):
                             errors = process.stderr.read()
                             process.stdout.close(); process.stderr.close()
                         self.assertEqual(process.returncode, 0, errors)
+                # The documented bare command must also work in an actual terminal.
+                master, slave = pty.openpty()
+                fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 60, 120, 0, 0))
+                terminal = subprocess.Popen([sys.executable, str(root / 'ctfd-monitor.py')], stdin=slave, stdout=slave, stderr=slave, cwd='/tmp', env=env)
+                os.close(slave)
+                output = b''
+                try:
+                    deadline = time.monotonic() + 15
+                    while time.monotonic() < deadline:
+                        readable, _, _ = select.select([master], [], [], 0.2)
+                        if readable:
+                            try:
+                                output += os.read(master, 65536)
+                            except OSError:
+                                break
+                        if b'LIVE' in output:
+                            break
+                    self.assertIn(b'LIVE', output)
+                    self.assertNotIn(b'CODEX WEEKLY', output)
+                    self.assertNotIn(b'Traceback', output)
+                finally:
+                    terminal.send_signal(signal.SIGINT)
+                    terminal.wait(timeout=10)
+                    os.close(master)
+                self.assertEqual(terminal.returncode, 0)
                 before = profile.read_bytes()
                 code, transcript = interactive_install(root, [('대회 URL: ', f'http://127.0.0.1:{server.server_port}'), ('비밀번호]: ', '1'), ('CTFd 토큰: ', 'invalid-secret')], env)
                 self.assertEqual(code, 1, transcript)
