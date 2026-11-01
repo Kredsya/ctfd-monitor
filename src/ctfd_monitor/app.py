@@ -2257,7 +2257,7 @@ def main() -> int:
             worker.join()
             koth_worker.join()
             codex_usage_worker.join()
-            sys.stdout.write("\033[?25h\n")
+            sys.stdout.write("\033[0m\033[2J\033[H\033[?25h")
             sys.stdout.flush()
     finally:
         instance_lock.release()

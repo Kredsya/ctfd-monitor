@@ -1,6 +1,6 @@
 # 전체 회귀 검증 기준
 
-감사 기준 구현: v0.2.0 (`3246754`), 현재 제품: v0.3.7. 감사에서 드러낸 계약을 유지하며 제품을 수정한다. 실패를 expectedFailure/skip으로 숨기지 않으며 통과 개수와 제품 완성도를 동일시하지 않는다. 수정 전 실패 목록은 [BASELINE.md](BASELINE.md)에 보존한다.
+감사 기준 구현: v0.2.0 (`3246754`), 현재 제품: v0.3.8. 감사에서 드러낸 계약을 유지하며 제품을 수정한다. 실패를 expectedFailure/skip으로 숨기지 않으며 통과 개수와 제품 완성도를 동일시하지 않는다. 수정 전 실패 목록은 [BASELINE.md](BASELINE.md)에 보존한다.
 
 ## 판정 근거
 
@@ -104,3 +104,7 @@ PYTHONPATH=src python3 tests/stock_ctfd_smoke.py  # Docker 필요
 - test_koth_layout: 승인한 두 줄 경기 카드·색상·정렬, 문제 개수 기준 좌우 선택·동률·KOTH 제외·시작 전 표시, 풀이 변경에 따른 이동, 실행 중 KOTH 추가/제거, 높이별 테두리·생략 표시, 혼잡한 화면의 그래프·Codex·KOTH·팀 비교 보존.
 - test_resource_timeline: 홀수/짝수 10가지 창 너비의 연속 프레임에서 CPU·메모리의 동일 시간 칸과 동시 이동.
 - test_ui_preservation/test_v034: 두 줄 카드에 맞춰 검사 위치를 바꾸고 기존 정수 점수·소수점 비교·원점수 숨김·열 정렬 검사를 유지. 한글 이름·여러 자릿수·조회 상태를 반 너비 패널에서도 확인.
+
+## v0.3.8 추가 검증
+
+- test_installer: checkout·sdist 설치 후 실제 PTY에서 SIGINT 종료 시 화면 삭제·색상 초기화·커서 위치 및 표시 복원 확인.

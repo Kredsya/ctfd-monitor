@@ -178,8 +178,17 @@ class InstallerTests(unittest.TestCase):
                 finally:
                     terminal.send_signal(signal.SIGINT)
                     terminal.wait(timeout=10)
+                    while select.select([master], [], [], 0.2)[0]:
+                        try:
+                            chunk = os.read(master, 65536)
+                        except OSError:
+                            break
+                        if not chunk:
+                            break
+                        output += chunk
                     os.close(master)
                 self.assertEqual(terminal.returncode, 0)
+                self.assertTrue(output.endswith(b"\x1b[0m\x1b[2J\x1b[H\x1b[?25h"), repr(output[-100:]))
                 before = profile.read_bytes()
                 code, transcript = interactive_install(root, [('대회 URL: ', f'http://127.0.0.1:{server.server_port}'), ('비밀번호]: ', '1'), ('CTFd 토큰: ', 'invalid-secret')], env)
                 self.assertEqual(code, 1, transcript)
