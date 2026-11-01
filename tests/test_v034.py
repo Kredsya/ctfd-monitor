@@ -28,7 +28,8 @@ class DisplayAndScoreTests(Scenario):
             self.assertIn('KOTH · 2 ARENAS',rows[0])
             self.assertNotRegex('\n'.join(rows),r'\d+\.\d+')
             self.assertTrue(all('KOTH' not in row for row in rows[1:-1]))
-            self.assertRegex(rows[1],r'230\s+Rank')
+            self.assertNotRegex(rows[1],r'\b230\b')
+            self.assertIn('Rank',rows[1])
             self.assertIn('1235 / 1500 pt',rows[1])
             for token in ('Rank',' / ',' pt'):
                 self.assertEqual(rows[1].index(token),rows[2].index(token))

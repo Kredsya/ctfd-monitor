@@ -1679,9 +1679,7 @@ def render_koth(view: dict[str, object], width: int) -> list[str]:
         rank = entry.get("rank")
         teams = entry.get("teams")
         rank_text = f"#{rank}/{teams}" if rank is not None and teams else "--/--"
-        score = entry.get("score")
         points = entry.get("points")
-        score_text = f"{float(score):.0f}" if isinstance(score, (int, float)) else "--"
         points_text = f"{float(points):.0f}" if isinstance(points, (int, float)) else "--"
         entry_maximum = float(KOTH_SOURCES.get(str(entry.get('id')), {}).get('max_points', KOTH_MAX_POINTS))
         ratio = max(0.0, min(1.0, float(points) / entry_maximum)) if isinstance(points, (int, float)) else 0.0
@@ -1690,31 +1688,30 @@ def render_koth(view: dict[str, object], width: int) -> list[str]:
             state = paint("  STALE", RED, bold=True) if points is not None else paint("  UNAVAILABLE", RED, bold=True)
         elif entry.get("status") != "LIVE":
             state = paint("  WAITING", YELLOW, bold=True)
-        formatted.append((name, score_text, rank_text, points_text, f'{entry_maximum:.0f}', state, ratio, entry.get('status')))
+        formatted.append((name, rank_text, points_text, f'{entry_maximum:.0f}', state, ratio, entry.get('status')))
     # Measure the whole panel once; every arena shares the same column widths.
     # Reserve the configured maximum's digits so point growth stays aligned.
-    score_width = max([7, *(len(row[1]) for row in formatted)])
-    rank_width = max([5, *(len(row[2]) for row in formatted)])
-    points_width = max([4, *(len(row[3]) for row in formatted),
-                        *(len(f'{float(row[4]):.0f}') for row in formatted)])
-    maximum_width = max([4, *(len(row[4]) for row in formatted)])
-    state_width = max([0, *(display_width(row[5]) for row in formatted)])
+    rank_width = max([5, *(len(row[1]) for row in formatted)])
+    points_width = max([4, *(len(row[2]) for row in formatted),
+                        *(len(f'{float(row[3]):.0f}') for row in formatted)])
+    maximum_width = max([4, *(len(row[3]) for row in formatted)])
+    state_width = max([0, *(display_width(row[4]) for row in formatted)])
     content_width = width - 4
-    fixed_width = score_width + rank_width + points_width + maximum_width + state_width + 20
+    fixed_width = rank_width + points_width + maximum_width + state_width + 18
     bar_width = max(0, min(20, content_width - fixed_width - 12))
-    for name, score_text, rank_text, points_text, maximum_text, state, ratio, status in formatted:
-        score_label = f"{score_text:>{score_width}}  Rank {rank_text:>{rank_width}}"
+    for name, rank_text, points_text, maximum_text, state, ratio, status in formatted:
+        rank_label = f"Rank {rank_text:>{rank_width}}"
         points_label = f"{points_text:>{points_width}} / {maximum_text:>{maximum_width}} pt"
         filled = round(bar_width * ratio)
         bar_color = GREEN if status == "LIVE" else YELLOW
         bar = paint("█" * filled, bar_color) + paint("░" * (bar_width - filled), GRAY)
-        right = f"{score_label}  {bar + '  ' if bar_width else ''}{points_label}{pad(state, state_width)}"
+        right = f"{rank_label}  {bar + '  ' if bar_width else ''}{points_label}{pad(state, state_width)}"
         name_width = content_width - display_width(right) - 2
         if name_width >= 8:
             lines.append(f"{pad(truncate(name, name_width), name_width)}  {right}")
         else:
             # Give numeric fields their own rows before shortening any score.
-            lines.extend([truncate(name, content_width), score_label + state, points_label])
+            lines.extend([truncate(name, content_width), rank_label + state, points_label])
     if not lines:
         lines = [paint("WAITING", YELLOW, bold=True)]
     title = f"KOTH · {len(entries)} ARENAS · {total:.0f} / {maximum:.0f} pt"
@@ -2076,7 +2073,7 @@ def render_screen(view: dict[str, object], resources: dict[str, object] | None =
     except (TypeError, ValueError):
         score_text = str(view.get("score") or "-")
     remaining, remaining_color = competition_countdown(view)
-    header = boxed(TITLE, [f"{paint('●', status_color, bold=True)} {paint(str(view['status']), status_color, bold=True)}    TIME REMAINING  {paint(remaining, remaining_color, bold=True)}", f"Team  {view['team_name']}    Challenges  {solved}/{len(challenges)}    Score  {score_text} pt    Rank  {view['rank']}"], width, CYAN)
+    header = boxed(TITLE, [f"{paint('●', status_color, bold=True)} {paint(str(view['status']), status_color, bold=True)}    {paint(remaining, remaining_color, bold=True)}", f"Team  {view['team_name']}    Challenges  {solved}/{len(challenges)}    Score  {score_text} pt    Rank  {view['rank']}"], width, CYAN)
     resources = resources or {"now": time.monotonic(), "cpu": 0.0, "memory": 0.0, "cpu_cores": os.cpu_count() or 1, "used_gib": 0.0, "total_gib": 0.0, "samples": []}
     transfers = render_transfers(view, width)
     comparison = render_team_comparison(view, width)

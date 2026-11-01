@@ -6,6 +6,14 @@ from scenarios import Scenario, m
 
 
 class UIPreservationTests(Scenario):
+    def test_header_keeps_countdown_without_label(self):
+        with patch.object(m,'competition_countdown',return_value=('01:23:45',m.CYAN)),patch.object(m.shutil,'get_terminal_size',return_value=os.terminal_size((120,61))):
+            text=m.ANSI_RE.sub('',m.render_screen(self.view(),self.resources()))
+        self.assertIn('01:23:45',text)
+        self.assertIn('LIVE',text)
+        self.assertNotIn('TIME REMAINING',text)
+        self.assertNotIn('TIME REAMINING',text)
+
     def test_resource_peak_matches_visible_bars_including_spikes_and_expiry(self):
         for width in (109,120,180):
             for now in (240,241,360,361):
@@ -140,7 +148,7 @@ class UIPreservationTests(Scenario):
             with self.subTest(width=width),patch.object(m,'KOTH_SOURCES',sources):
                 lines=m.render_koth(view,width)
                 text=m.ANSI_RE.sub('','\n'.join(lines))
-                self.assertEqual(text.count('1234568'),3)
+                self.assertNotIn('1234568',text)
                 self.assertEqual(text.count('1235 / 1500 pt'),3)
                 self.assertNotIn('PROJECTED',text)
                 self.assertTrue(all(m.display_width(line)<=width for line in lines))
