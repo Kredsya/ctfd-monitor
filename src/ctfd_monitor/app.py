@@ -332,6 +332,9 @@ class ResourceSampler:
 
     def __init__(self) -> None:
         self.samples: deque[tuple[float, float, float]] = deque(maxlen=RESOURCE_HISTORY_SAMPLES)
+        # Completed display cells, not extra raw samples. Keep their heights
+        # until they scroll out, even as the 120-second raw history is pruned.
+        self.plot_cache: dict[tuple[int, int], tuple[float, int, tuple[float | None, ...]]] = {}
         self.previous_cpu = self.read_cpu_times()
         self.last_sample = time.monotonic()
         try:
@@ -392,6 +395,7 @@ class ResourceSampler:
             "used_gib": self.used_gib,
             "total_gib": self.total_gib,
             "samples": list(self.samples),
+            "plot_cache": self.plot_cache,
         }
 
 
@@ -1934,25 +1938,46 @@ def render_events(view: dict[str, object], width: int, *, limit: int = 4) -> lis
 
 
 def resource_series(resources: dict[str, object], value_index: int, width: int) -> list[float | None]:
-    buckets: list[list[float]] = [[] for _ in range(width)]
-    now = float(resources.get("now") or time.monotonic())
-    bucket_seconds = RESOURCE_HISTORY_SECONDS / width
-    graph_end = math.floor(now / bucket_seconds) * bucket_seconds
-    start = graph_end - RESOURCE_HISTORY_SECONDS
+    if width <= 0:
+        return []
+    timestamp = resources.get("now")
+    now = time.monotonic() if timestamp is None else float(timestamp)
+    # Use absolute integer bucket IDs for both samples and frames. Subtracting
+    # a moving floating-point start made boundary samples jump between cells.
+    end = math.floor(now * width / RESOURCE_HISTORY_SECONDS)
+    start = end - width
+    values: list[float | None] = [None] * width
+    first_new = 0
+    cache = resources.get("plot_cache")
+    key = (value_index, width)
+    previous = cache.get(key) if isinstance(cache, dict) else None
+    if previous is not None:
+        previous_now, previous_end, previous_values = previous
+        shift = end - previous_end
+        if now >= previous_now and 0 <= shift < width:
+            values = list(previous_values[shift:]) + [None] * shift
+            first_new = width - shift
     cutoff = now - RESOURCE_RETENTION_SECONDS
     for sample in resources.get("samples", []):
         if not isinstance(sample, (tuple, list)) or len(sample) <= value_index:
             continue
         moment = float(sample[0])
-        # Only render completed buckets. Samples in the active bucket used to
-        # be clamped into the last cell, making that cell move every second.
-        if moment < max(start, cutoff) or moment >= graph_end:
+        if moment < cutoff or moment > now:
             continue
-        index = int((moment - start) / bucket_seconds)
-        if not 0 <= index < width:
+        index = math.floor(moment * width / RESOURCE_HISTORY_SECONDS) - start
+        # Only fill newly completed cells. In particular, never recalculate
+        # the leftmost cell from the partially expired raw samples.
+        if not first_new <= index < width:
             continue
-        buckets[index].append(float(sample[value_index]))
-    return [max(bucket) if bucket else None for bucket in buckets]
+        value = float(sample[value_index])
+        values[index] = value if values[index] is None else max(values[index], value)
+    if isinstance(cache, dict):
+        cache.pop(key, None)
+        cache[key] = (now, end, tuple(values))
+        # Resizing and compact/full layouts must not grow the cache forever.
+        while len(cache) > 32:
+            del cache[next(iter(cache))]
+    return values
 
 
 def resource_chart(title: str, current: float, peak: float | None, values: list[float | None], width: int, color: str, detail: str = "") -> list[str]:
