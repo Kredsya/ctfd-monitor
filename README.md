@@ -57,6 +57,8 @@ python3 ctfd-monitor.py --headless  # JSON 상태 로그
 
 비교 패널은 원본의 구성을 유지합니다. 왼쪽에는 상위 상대 네 팀의 순위와 우리 팀 대비 총점·KOTH 점수 차이, 오른쪽에는 문제별 풀이 비교를 표시합니다. 표준 CTFd에서는 공개 풀이 API를 기본 10초 간격으로 조회하며, 비공개·조회 실패는 `?`로 구분합니다. 모두 푼 문제는 숨기고, 좁은 터미널에서는 두 영역을 위아래로 배치합니다. KOTH 열은 설정한 경기 목록을 사용합니다.
 
+우리 팀도 실제 순위에 따라 행 위치가 바뀌며, 풀이 비교의 `US` 열도 같은 순서를 따릅니다. 비교 셀은 채도가 낮은 배경색을 사용합니다. 원본의 최소 창 크기 **109열 × 54행**보다 작으면 경고창을 표시합니다. 긴 문제 목록 때문에 CPU·RAM 그래프를 제거하지 않으며, 작은 창에서도 두 그래프를 압축해 유지하고 생략한 목록은 표시합니다.
+
 ## 설정과 파일
 
 설정은 `.ctfd-monitor-local/competition.toml`, 인증 정보는 같은 폴더의 `credentials-*.json`에 저장됩니다. 디렉터리는 `0700`, 파일은 `0600` 권한이며 Git에서 제외됩니다. 암호화 저장은 아니므로 이 폴더를 공유하지 마세요. 설치 도구를 다시 실행하면 검증 후 설정을 교체하고 이전 인증 파일을 삭제합니다.
@@ -78,11 +80,12 @@ python3 ctfd-monitor.py --headless  # JSON 상태 로그
 | `account_mode` | users, teams 또는 auto |
 | `poll_interval`, `max_workers` | 기본 5초, 다운로드 작업자 4개 |
 | `max_download_bytes` | 다운로드/압축 해제 한도, 기본 2 GiB |
-| `contest_end` | 선택적 ISO 8601 종료 시각, 시간대 필수 |
+| `contest_end` | 선택적 ISO 8601 종료 시각, 시간대 필수. 지정하면 서버 시각보다 우선 |
 | `auto_extract` | 기본 false |
 | `agents_template` | 새 문제의 사용자 지침 템플릿. 생략하면 기본 지침 생성 |
 | `helpers` | 기본 `["22.sh", "25.sh"]`. 명시적으로 `[]`를 넣으면 복사하지 않음 |
-| `koth`, `codex_usage` | 기존 ACDC용 통합, 기본 false |
+| `koth` | KOTH 통합, 기본 false. `koth_sources`가 있으면 자동 활성화 |
+| `codex_usage` | 로컬 Codex 계정의 주간 잔여량·크레딧 표시, 기본 false. CTF 종류와 무관 |
 
 기존 환경변수 프로필도 `--config`로 지정할 수 있습니다. `CTFD_MONITOR_URL/ROOT/STATE`는 프로필보다 우선합니다. `CTFD_MONITOR_TOKEN` 또는 `CTFD_MONITOR_USER/PASSWORD` 중 인증 환경변수가 하나라도 지정되어 있으면 저장된 인증 대신 환경변수 세트를 사용합니다. 기존 환경변수가 남아 있으면 먼저 해제하세요. 저장된 비밀번호·토큰을 TOML에 직접 넣지 마세요.
 
@@ -106,3 +109,9 @@ PYTHONPATH=src python3 tests/run_suite.py
 모니터를 종료하고 `git pull --ff-only`로 업데이트한 뒤 `python3 ctfd-monitor.py doctor`, `python3 ctfd-monitor.py`를 실행하세요. 기존 설치 설정·인증·작업 폴더는 그대로 사용할 수 있으며 재설치가 필요하지 않습니다. `helpers`를 생략한 기존 설치는 두 스크립트가 기본으로 추가됩니다. 기존 설정에 `helpers = []`를 직접 지정했다면 해당 줄을 삭제하거나 두 이름을 넣어야 복사가 활성화됩니다. 기존 `AGENTS.md`와 풀이 파일은 유지합니다.
 
 로컬 공식 CTFd 대회 운영·검증 환경: [실행 및 메뉴 안내](docs/local-lab.md). `python3 lab.py`로 시작합니다.
+
+종료 시각은 대회 전용 config API 또는 기본 CTFd 공개 페이지의 `window.init.end`에서 읽고 10초 간격으로 갱신합니다. 토큰 인증만으로도 가능하며 별도 웹 로그인이 필요하지 않습니다. 종료 시각이 없는 대회는 `NO LIMIT`, 아직 정보를 얻지 못했으면 `WAITING`으로 표시합니다.
+
+Codex 표시를 사용하려면 프로필의 `codex_usage = true`를 지정합니다. 일반 화면과 작은 화면 모두 자원 패널에 표시하며, 최초 조회 실패는 `UNAVAILABLE`, 이전 값이 있는 조회 실패는 `STALE`로 구분합니다.
+
+CPU·메모리 막대는 각 시간 칸의 최대 측정값이며, `Peak`는 화면에 표시된 120초 구간의 막대 중 최댓값입니다. 완료된 시간 칸만 표시하므로 최신 측정값은 다음 칸 갱신 때 반영됩니다. 내부 보관 버퍼 135초 전체나 실행 이후 전체의 최대값이 아닙니다. 분야 사이 간격은 화면 높이와 관계없이 한 줄로 유지합니다.

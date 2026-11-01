@@ -40,6 +40,67 @@ class NonceParser(HTMLParser):
             self.nonce = str(values["value"])
 
 
+def normalize_contest_end(value: object) -> str:
+    """Normalize CTFd Unix seconds or a timezone-qualified ISO deadline."""
+    if value is None or value == "" or value == 0 and not isinstance(value, bool):
+        return ""
+    if isinstance(value, bool):
+        raise ValueError("invalid contest end")
+    if isinstance(value, (int, float)) or isinstance(value, str) and re.fullmatch(r"\d+(?:\.\d+)?", value):
+        if float(value) == 0:
+            return ""
+        end = datetime.fromtimestamp(float(value), timezone.utc)
+    elif isinstance(value, str):
+        end = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if end.tzinfo is None:
+            raise ValueError("contest end requires a timezone")
+    else:
+        raise ValueError("invalid contest end")
+    return end.astimezone(timezone.utc).isoformat()
+
+
+class ContestTimeParser(HTMLParser):
+    """Read top-level window.init data without executing JavaScript."""
+    def __init__(self):
+        super().__init__()
+        self.script = None
+        self.found = False
+        self.end = None
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "script":
+            self.script = ""
+
+    def handle_data(self, data):
+        if self.script is not None:
+            self.script += data
+
+    def handle_endtag(self, tag):
+        if tag != "script" or self.script is None:
+            return
+        script, self.script = self.script, None
+        match = re.search(r"\bwindow\.init\s*=\s*\{", script)
+        if not match:
+            return
+        rest = script[match.end():].lstrip()
+        decoder = json.JSONDecoder()
+        while rest:
+            key = re.match(r"(['\"])(\w+)\1\s*:\s*", rest)
+            if not key:
+                return
+            try:
+                value, offset = decoder.raw_decode(rest[key.end():])
+            except ValueError:
+                return
+            if key[2] == "end":
+                self.end, self.found = value, True
+                return
+            rest = rest[key.end() + offset:].lstrip()
+            if not rest.startswith(","):
+                return
+            rest = rest[1:].lstrip()
+
+
 class SafeRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         request = super().redirect_request(req, fp, code, msg, headers, newurl)
@@ -61,8 +122,23 @@ class CTFdClient:
         self.retry_until = 0.0
         self.cookies = http.cookiejar.CookieJar()
         self.opener = urllib.request.build_opener(SafeRedirect(), urllib.request.HTTPCookieProcessor(self.cookies))
+        self.public_opener = urllib.request.build_opener(SafeRedirect())
         self.logged_in = False
         self.selected_routes: dict[tuple[str, ...], str] = {}
+
+    def record_retry_after(self, headers) -> None:
+        delay = 60.0
+        raw = headers.get("Retry-After", "")
+        try:
+            delay = float(raw)
+        except ValueError:
+            try:
+                delay = (parsedate_to_datetime(raw) - datetime.now(timezone.utc)).total_seconds()
+            except (ValueError, TypeError, OverflowError):
+                pass
+        if not 0 <= delay <= 86400:
+            delay = 60.0
+        self.retry_until = time.monotonic() + delay
 
     def request_json(self, path: str, *, method: str = "GET", payload: dict[str, object] | None = None) -> dict[str, object]:
         target = urllib.parse.urljoin(self.base_url + "/", path.lstrip("/"))
@@ -88,18 +164,7 @@ class CTFdClient:
                     raise ApiError(path, 502, "expected a JSON response") from error
         except urllib.error.HTTPError as error:
             if error.code == 429:
-                delay = 60.0
-                raw = error.headers.get("Retry-After", "")
-                try:
-                    delay = float(raw)
-                except ValueError:
-                    try:
-                        delay = (parsedate_to_datetime(raw) - datetime.now(timezone.utc)).total_seconds()
-                    except (ValueError, TypeError, OverflowError):
-                        pass
-                if not 0 <= delay <= 86400:
-                    delay = 60.0
-                self.retry_until = time.monotonic() + delay
+                self.record_retry_after(error.headers)
             body = error.read().decode("utf-8", errors="replace")
             try:
                 result = json.loads(body)
@@ -142,6 +207,43 @@ class CTFdClient:
         if last_error is not None:
             raise last_error
         raise ValueError("at least one API route is required")
+
+    def fetch_contest_end(self) -> str:
+        try:
+            data = self.request_json_routes(("/api/v2/config/", "/api/v2/config")).get("data")
+        except ApiError as error:
+            if error.status not in {404, 405} and error.code != "route_not_allowed":
+                raise
+        else:
+            competition = data.get("competition") if isinstance(data, dict) else None
+            if isinstance(competition, dict) and "end" in competition:
+                try:
+                    return normalize_contest_end(competition["end"])
+                except (ValueError, OverflowError, OSError) as error:
+                    raise ApiError("/api/v2/config", 502, "invalid contest end") from error
+        # Stock CTFd exposes timing in window.init on its login page, even
+        # before the event starts. A token does not need a browser login.
+        if time.monotonic() < self.retry_until:
+            raise ApiError("/login", 429, "waiting for server Retry-After")
+        request = urllib.request.Request(self.base_url + "/login", headers={"User-Agent": f"ctfd-monitor/{__version__}"})
+        try:
+            with self.public_opener.open(request, timeout=10) as response:
+                page = response.read(2 * 1024 * 1024 + 1)
+            if len(page) > 2 * 1024 * 1024:
+                raise ValueError("timing page too large")
+            parser = ContestTimeParser()
+            parser.feed(page.decode("utf-8"))
+            if not parser.found:
+                raise ValueError("public contest timing unavailable")
+            return normalize_contest_end(parser.end)
+        except urllib.error.HTTPError as error:
+            if error.code == 429:
+                self.record_retry_after(error.headers)
+            raise ApiError("/login", error.code, "cannot read public contest timing") from error
+        except (urllib.error.URLError, TimeoutError) as error:
+            raise ApiError("/login", 0, "cannot read public contest timing") from error
+        except (ValueError, OverflowError, OSError) as error:
+            raise ApiError("/login", 502, "invalid public contest timing") from error
 
     def login(self) -> dict[str, object]:
         if self.token:

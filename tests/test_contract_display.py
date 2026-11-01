@@ -52,12 +52,12 @@ class DisplayContracts(Scenario):
         view=self.monitor.state.view()
         view.update(team_name='Ours',scoreboard=[{'account_id':1,'name':'Opponent','pos':1,'score':200},{'account_id':7,'name':'Ours','pos':2,'score':123}],challenges={})
         text=plain(m.render_team_comparison(view,160))
-        self.assertIn('OUR ACTUAL #2',text)
+        self.assertRegex(text, r'#2\s+Ours')
         self.assertIn('+77',text,'Opponent 200 minus own 123 must produce +77, not +0')
 
     def test_resource_graph_ignores_out_of_window_samples(self):
         resources={'now':240,'samples':[(0,999,999),(121,10,20),(130,30,40),(239,50,60),(241,999,999)]}
         points=m.resource_series(resources,1,8)
-        self.assertEqual(points[0],20)
+        self.assertEqual(points[0],30)
         self.assertEqual(points[-1],50)
         self.assertNotIn(999,points)

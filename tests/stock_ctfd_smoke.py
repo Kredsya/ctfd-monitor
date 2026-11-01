@@ -26,6 +26,8 @@ with app.app_context():
     db.session.add(user)
     db.session.commit()
     db.session.add(UserTokens(user_id=user.id,value='ctfd_local_smoke_test_only'))
+    set_config('start', 1)
+    set_config('end', 1893456000)
     db.session.add(UserTokens(user_id=user.id,value='ctfd_expired_fixture_only',expiration=datetime.utcnow()-timedelta(days=1)))
     db.session.add(Challenges(name='Smoke',description='Read-only test challenge',category='misc',value=100,type='standard',state='visible'))
     db.session.commit()
@@ -38,6 +40,7 @@ from CTFd.utils import set_config
 app=create_app()
 with app.app_context():
     set_config('user_mode', 'teams')
+    set_config('end', 1893459600)
     team=Teams(name='Monitor team',email='team@example.invalid',password='local-test-password')
     db.session.add(team)
     db.session.flush()
@@ -70,7 +73,9 @@ def main():
         docker('exec', '-i', name, 'python', '-', input=SEED, timeout=30)
         for mode in ('token', 'password'):
             client = CTFdClient(url, 'monitor-test' if mode == 'password' else '', 'local-test-password' if mode == 'password' else '', 'ctfd_local_smoke_test_only' if mode == 'token' else '')
+            assert client.fetch_contest_end() == '2030-01-01T00:00:00+00:00'
             user, status = verify(client)
+            assert client.fetch_contest_end() == '2030-01-01T00:00:00+00:00'
             assert user['name'] == 'monitor-test'
             assert client.request_json('/api/v1/challenges/1')['data']['name'] == 'Smoke'
             assert isinstance(client.request_json('/api/v1/users/me/solves')['data'], list)
@@ -103,11 +108,14 @@ def main():
             raise RuntimeError('Stock CTFd did not restart')
         for mode in ('token', 'password'):
             client = CTFdClient(url, 'monitor-test' if mode == 'password' else '', 'local-test-password' if mode == 'password' else '', 'ctfd_local_smoke_test_only' if mode == 'token' else '')
+            assert client.fetch_contest_end() == '2030-01-01T01:00:00+00:00'
             user, _ = verify(client)
             assert user['team_id']
             assert client.request_json('/api/v1/teams/me')['data']['name'] == 'Monitor team'
             assert isinstance(client.request_json('/api/v1/teams/me/solves')['data'], list)
+            assert client.fetch_contest_end() == '2030-01-01T01:00:00+00:00'
             print('teams/' + mode + ': account detection, team profile and solves passed')
+        print('stock public deadline: token/password, before/after login, and changed end passed')
     finally:
         subprocess.run(prefix + ['rm', '-f', name], capture_output=True)
 

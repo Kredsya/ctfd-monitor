@@ -1,6 +1,6 @@
 # 전체 회귀 검증 기준
 
-감사 기준 구현: v0.2.0 (`3246754`), 현재 제품: v0.3.1. 감사에서 드러낸 계약을 유지하며 제품을 수정한다. 실패를 expectedFailure/skip으로 숨기지 않으며 통과 개수와 제품 완성도를 동일시하지 않는다. 수정 전 실패 목록은 [BASELINE.md](BASELINE.md)에 보존한다.
+감사 기준 구현: v0.2.0 (`3246754`), 현재 제품: v0.3.2. 감사에서 드러낸 계약을 유지하며 제품을 수정한다. 실패를 expectedFailure/skip으로 숨기지 않으며 통과 개수와 제품 완성도를 동일시하지 않는다. 수정 전 실패 목록은 [BASELINE.md](BASELINE.md)에 보존한다.
 
 ## 판정 근거
 
@@ -29,6 +29,7 @@
 | polling | 서버 장애→STALE→회복, backoff, 401 재인증, 대회 종료 시 마지막 정보, 빈 대회 | test_contract_runtime |
 | 표시·종료 | 1×1/40×10/80×24/120×60/200×80, 한글·결합문자·이모지, countdown의 잘못된 시간대, 표준 점수판 차이, active/done/error 전송, 사건·badge 만료, 자원 graph 경계, terminal clipboard escape, PTY Ctrl-C, headless SIGTERM | test_contract_runtime, test_installer, test_integration |
 | 보조 스크립트 실행 | 격리된 실제 tmux에서 4/10 pane, 실제 PTY F2/F3 전환·focus 복원, AGENTS/deploy 복사, 재접속 시 작업 보존 | test_contract_helpers_runtime |
+| UI 보존 | Codex 활성 프로필의 일반·작은 화면, WAITING/UNAVAILABLE/STALE/크레딧, 분야 간격, KOTH 열 정렬, CPU·메모리 순간 최대값·만료와 막대/Peak 일치 | test_ui_preservation |
 | 선택 통합 | 비활성 시 subprocess 금지, 미지원 KOTH, 4종 adapter의 점수/순위/페이지/라운드 fixture, Codex 바이너리 없음/응답 파싱/자식 종료 | test_contract_optional |
 | v0.3 제품 경계 | 각 자산 누락·빈 파일·권한 오류 시 설정 보존, 사용자 지침·스크립트 우선순위, 저장 함수 실제 도달, 전체 압축 경로 선검사, 재시작 STALE, 일반 403, probe 실패 종료, 기본 화면의 ACDC 지표 제외, 출력 폭·제어문자 | test_v030, test_contract_setup |
 

@@ -18,7 +18,7 @@ class ComparisonTests(Scenario):
     def test_original_panels_deltas_solve_colors_and_completed_filter(self):
         rendered='\n'.join(m.render_team_comparison(self.view(),140))
         plain=m.ANSI_RE.sub('',rendered)
-        for text in ('TEAM COMPARISON','TOP 4 OPPONENTS','RK TEAM','ΔPT','JEOPARDY CHALLENGE','OUR ACTUAL #2','+77','-23','Opponent only','Our advantage',' │ '):
+        for text in ('TEAM COMPARISON','RK TEAM','ΔPT','JEOPARDY CHALLENGE','+77','-23','Opponent only','Our advantage',' │ '):
             self.assertIn(text,plain)
         self.assertNotIn('Everyone solved',plain)
         self.assertIn(m.RED_BG,rendered)
@@ -61,7 +61,7 @@ class ComparisonTests(Scenario):
         view=self.view();view['scoreboard'][0]['name']='Ours'
         for n in range(4,8):view['scoreboard'].append({'account_id':n+10,'name':f'Rank {n}','pos':n,'score':10})
         plain=m.ANSI_RE.sub('','\n'.join(m.render_team_comparison(view,140)))
-        self.assertIn('OUR ACTUAL #2',plain)
+        self.assertRegex(plain, r'#2\s+Ours')
         self.assertIn('+77',plain)
         self.assertIn('Rank 5',plain)
         self.assertNotIn('Rank 6',plain)

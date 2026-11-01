@@ -85,9 +85,9 @@ KOTH_POLL_INTERVAL = 2.0 if TEST_MODE else 10.0
 KOTH_MAX_POINTS = 1500.0
 CODEX_USAGE_POLL_INTERVAL = 10.0 if TEST_MODE else 12.0
 SOLVE_POLL_INTERVAL = 2.0 if TEST_MODE else 10.0
-CONFIG_POLL_INTERVAL = 10.0 if TEST_MODE else 60.0
-MIN_TERMINAL_COLUMNS = 32
-MIN_TERMINAL_ROWS = 8
+CONFIG_POLL_INTERVAL = 10.0
+MIN_TERMINAL_COLUMNS = 109
+MIN_TERMINAL_ROWS = 54
 
 ESC = "\033["
 RESET = f"{ESC}0m"
@@ -99,8 +99,10 @@ CYAN = f"{ESC}38;5;45m"
 BLUE = f"{ESC}38;5;75m"
 GRAY = f"{ESC}38;5;245m"
 WHITE = f"{ESC}38;5;255m"
-GREEN_BG = f"{ESC}48;5;22m"
-RED_BG = f"{ESC}48;5;88m"
+GREEN_BG = f"{ESC}48;2;35;48;42m"
+RED_BG = f"{ESC}48;2;52;38;41m"
+COMPARISON_GREEN = f"{ESC}38;2;166;191;174m"
+COMPARISON_RED = f"{ESC}38;2;203;173;177m"
 ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 TERMINAL_ESCAPE_RE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\|$)|[PX^_].*?(?:\x1b\\|$)|.|$)", re.DOTALL)
 PARTIAL_BLOCKS = " ▁▂▃▄▅▆▇█"
@@ -190,6 +192,17 @@ def boxed(title: str, lines: list[str], width: int, color: str) -> list[str]:
         output.append(paint("│", color) + " " + pad(line, inner - 1) + paint("│", color))
     output.append(paint("└" + "─" * (width - 2) + "┘", color))
     return output
+
+
+def fit_panel(lines: list[str], rows: int, width: int, color: str) -> list[str]:
+    """Keep panel borders and make omitted rows explicit when the screen is full."""
+    if len(lines) <= rows:
+        return lines
+    if rows < 3:
+        return []
+    omitted = len(lines) - rows + 1
+    notice = boxed('', [paint(f'… {omitted} more rows · enlarge terminal', GRAY)], width, color)[1]
+    return lines[:rows - 2] + [notice, lines[-1]]
 
 
 def description_text(value: object) -> str:
@@ -399,6 +412,7 @@ class SharedState:
         self.rank = "-"
         self.scoreboard: list[dict[str, object]] = []
         self.contest_end = CONTEST_END
+        self.contest_end_known = bool(CONTEST_END)
         self.challenges: dict[str, dict[str, object]] = {}
         self.koth: dict[str, dict[str, object]] = {}
         self.codex_usage: dict[str, object] = {"status": "WAITING"}
@@ -425,7 +439,7 @@ class SharedState:
         now = time.monotonic()
         with self.lock:
             self.jobs = [job for job in self.jobs if job.done_at is None or now - job.done_at < DONE_TTL]
-            return {"status": self.status, "team_name": self.team_name, "account_id": self.account_id, "score": self.score, "rank": self.rank, "scoreboard": copy.deepcopy(self.scoreboard), "contest_end": self.contest_end, "challenges": copy.deepcopy(self.challenges), "koth": copy.deepcopy(self.koth), "codex_usage": copy.deepcopy(self.codex_usage), "events": copy.deepcopy(self.events[-100:]), "jobs": copy.copy(self.jobs)}
+            return {"status": self.status, "team_name": self.team_name, "account_id": self.account_id, "score": self.score, "rank": self.rank, "scoreboard": copy.deepcopy(self.scoreboard), "contest_end": self.contest_end, "contest_end_known": self.contest_end_known, "challenges": copy.deepcopy(self.challenges), "koth": copy.deepcopy(self.koth), "codex_usage": copy.deepcopy(self.codex_usage), "events": copy.deepcopy(self.events[-100:]), "jobs": copy.copy(self.jobs)}
 
 
 class Monitor:
@@ -804,6 +818,9 @@ class Monitor:
                 except subprocess.TimeoutExpired:
                     process.kill()
                     process.wait(timeout=3)
+            for pipe in (process.stdin, process.stdout):
+                if pipe is not None:
+                    pipe.close()
 
     def run_codex_usage(self) -> None:
         if not CODEX_ENABLED:
@@ -1321,19 +1338,21 @@ class Monitor:
         return f"#{own.get('pos') or index}"
 
     def refresh_contest_config(self, *, force: bool = False) -> None:
+        if CONTEST_END:
+            with self.state.lock:
+                self.state.contest_end = CONTEST_END
+            return
         now = time.monotonic()
         if not force and now - self.last_config_refresh < CONFIG_POLL_INTERVAL:
             return
         self.last_config_refresh = now
         try:
-            data = self.client.request_json_routes(("/api/v2/config/", "/api/v2/config")).get("data")
+            end = self.client.fetch_contest_end()
         except ApiError:
             return
-        competition = data.get("competition") if isinstance(data, dict) and isinstance(data.get("competition"), dict) else {}
-        end = str(competition.get("end") or "")
-        if end:
-            with self.state.lock:
-                self.state.contest_end = end
+        with self.state.lock:
+            self.state.contest_end = end
+            self.state.contest_end_known = True
 
     def fetch_team_solves(self) -> dict[int, dict[str, object]]:
         try:
@@ -1582,21 +1601,21 @@ def problem_line(challenge: dict[str, object], width: int) -> str:
     return f"{pad(left, left_width)} {score}"
 
 
-def challenge_lines(challenges: list[dict[str, object]], width: int, *, compact: bool = False) -> list[str]:
+def challenge_lines(challenges: list[dict[str, object]], width: int) -> list[str]:
     groups: dict[str, list[dict[str, object]]] = {}
     for challenge in challenges:
         groups.setdefault(str(challenge.get("category") or "unknown"), []).append(challenge)
     lines: list[str] = []
     for group_index, group_name in enumerate(sorted(groups, key=str.casefold)):
         problems = sorted(groups[group_name], key=lambda value: str(value["name"]).casefold())
-        if group_index and not compact:
+        if group_index:
             lines.append("")
         lines.append(paint(f"{group_name.upper()} ({len(problems)})", WHITE, bold=True))
         lines.extend(problem_line(challenge, width) for challenge in problems)
     return lines
 
 
-def render_challenges(view: dict[str, object], left_width: int, right_width: int, *, compact: bool = False) -> list[str]:
+def render_challenges(view: dict[str, object], left_width: int, right_width: int, *, max_rows: int | None = None) -> list[str]:
     challenges = [challenge for challenge in view["challenges"].values() if not is_koth_challenge(challenge)]
     if view["status"] == "PRE-START":
         left = boxed("UNSOLVED  0", ["", paint("Competition has not start.", YELLOW, bold=True), "", ""], left_width, RED)
@@ -1604,8 +1623,11 @@ def render_challenges(view: dict[str, object], left_width: int, right_width: int
     else:
         unsolved = [challenge for challenge in challenges if not challenge.get("solved")]
         solved = [challenge for challenge in challenges if challenge.get("solved")]
-        left = boxed(f"UNSOLVED  {len(unsolved)}", challenge_lines(unsolved, left_width - 4, compact=compact), left_width, RED)
-        right = boxed(f"SOLVED  {len(solved)}", challenge_lines(solved, right_width - 4, compact=compact), right_width, GREEN)
+        left = boxed(f"UNSOLVED  {len(unsolved)}", challenge_lines(unsolved, left_width - 4), left_width, RED)
+        right = boxed(f"SOLVED  {len(solved)}", challenge_lines(solved, right_width - 4), right_width, GREEN)
+    if max_rows is not None:
+        left = fit_panel(left, max_rows, left_width, RED)
+        right = fit_panel(right, max_rows, right_width, GREEN)
     rows = max(len(left), len(right))
     left += [" " * left_width] * (rows - len(left))
     right += [" " * right_width] * (rows - len(right))
@@ -1618,6 +1640,7 @@ def render_koth(view: dict[str, object], width: int) -> list[str]:
     total = sum(known_points)
     maximum = sum(float(KOTH_SOURCES.get(str(entry.get('id')), {}).get('max_points', KOTH_MAX_POINTS)) for entry in entries)
     lines: list[str] = []
+    formatted = []
     for entry in entries:
         name = str(entry.get("name") or "KOTH")
         rank = entry.get("rank")
@@ -1629,27 +1652,39 @@ def render_koth(view: dict[str, object], width: int) -> list[str]:
         points_text = f"{float(points):.2f}" if isinstance(points, (int, float)) else "--"
         entry_maximum = float(KOTH_SOURCES.get(str(entry.get('id')), {}).get('max_points', KOTH_MAX_POINTS))
         ratio = max(0.0, min(1.0, float(points) / entry_maximum)) if isinstance(points, (int, float)) else 0.0
-        bar_width = 20 if width >= 110 else max(8, min(16, width - 64))
-        filled = round(bar_width * ratio)
-        bar_color = GREEN if entry.get("status") == "LIVE" else YELLOW
-        bar = paint("█" * filled, bar_color) + paint("░" * (bar_width - filled), GRAY)
         state = ""
         if entry.get("status") == "ERROR":
             state = paint("  STALE", RED, bold=True) if points is not None else paint("  UNAVAILABLE", RED, bold=True)
         elif entry.get("status") != "LIVE":
             state = paint("  WAITING", YELLOW, bold=True)
-        if width >= 110:
-            left = f"{pad(truncate(name, 40), 40)}  KOTH {score_text:>10}{state}"
+        formatted.append((name, score_text, rank_text, points_text, f'{entry_maximum:g}', state, ratio, entry.get('status')))
+    # Measure the whole panel once; every arena shares the same column widths.
+    # Reserve the configured maximum's digits so point growth stays aligned.
+    score_width = max([10, *(len(row[1]) for row in formatted)])
+    rank_width = max([5, *(len(row[2]) for row in formatted)])
+    points_width = max([7, *(len(row[3]) for row in formatted),
+                        *(len(f'{float(row[4]):.2f}') for row in formatted)])
+    maximum_width = max([4, *(len(row[4]) for row in formatted)])
+    state_width = max([0, *(display_width(row[5]) for row in formatted)])
+    content_width = width - 4
+    fixed_width = score_width + rank_width + points_width + maximum_width + state_width + 25
+    bar_width = max(0, min(20, content_width - fixed_width - 12))
+    for name, score_text, rank_text, points_text, maximum_text, state, ratio, status in formatted:
+        score_label = f"KOTH {score_text:>{score_width}}  Rank {rank_text:>{rank_width}}"
+        points_label = f"{points_text:>{points_width}} / {maximum_text:>{maximum_width}} pt"
+        filled = round(bar_width * ratio)
+        bar_color = GREEN if status == "LIVE" else YELLOW
+        bar = paint("█" * filled, bar_color) + paint("░" * (bar_width - filled), GRAY)
+        right = f"{score_label}  {bar + '  ' if bar_width else ''}{points_label}{pad(state, state_width)}"
+        name_width = content_width - display_width(right) - 2
+        if name_width >= 8:
+            lines.append(f"{pad(truncate(name, name_width), name_width)}  {right}")
         else:
-            left = f"{pad(truncate(name, 32), 32)}{state}"
-        right = f"Rank {rank_text:>9}  {bar}  {points_text:>8} / {entry_maximum:g} pt"
-        content_width = width - 4
-        left_width = max(1, content_width - display_width(right))
-        line = f"{pad(truncate(left, max(1, left_width - 2)), left_width)}{right}"
-        lines.append(line)
+            # Give numeric fields their own rows before shortening any score.
+            lines.extend([truncate(name, content_width), score_label + state, points_label])
     if not lines:
         lines = [paint("WAITING", YELLOW, bold=True)]
-    title = f"KOTH · {len(entries)} ARENAS · PROJECTED {total:.2f} / {maximum:.0f} pt"
+    title = f"KOTH · {len(entries)} ARENAS · {total:.2f} / {maximum:.0f} pt"
     return boxed(title, lines, width, CYAN)
 
 
@@ -1664,30 +1699,30 @@ def comparison_status_cell(ours: bool, theirs: bool) -> str:
     if ours and theirs:
         return paint(f"{'✓':^5}", GRAY)
     if theirs:
-        return f"{BOLD}{RED_BG}{RED}{'✓':^5}{RESET}"
+        return f"{RED_BG}{COMPARISON_RED}{'✓':^5}{RESET}"
     if ours:
-        return f"{BOLD}{GREEN_BG}{GREEN}{'×':^5}{RESET}"
+        return f"{GREEN_BG}{COMPARISON_GREEN}{'×':^5}{RESET}"
     return paint(f"{'.':^5}", GRAY)
 
 
 def comparison_delta_cell(value: float, width: int = 5) -> str:
     if value > 0:
-        return f"{RED_BG}{RED}{value:+{width}.0f}{RESET}"
+        return f"{RED_BG}{COMPARISON_RED}{value:+{width}.2f}{RESET}"
     if value < 0:
-        return f"{GREEN_BG}{GREEN}{value:+{width}.0f}{RESET}"
-    return f"{value:+{width}.0f}"
+        return f"{GREEN_BG}{COMPARISON_GREEN}{value:+{width}.2f}{RESET}"
+    return f"{value:+{width}.2f}"
 
 
 def render_team_comparison(view: dict[str, object], width: int) -> list[str]:
     rows = [row for row in view.get('scoreboard', []) if isinstance(row, dict)]
     own = Monitor.scoreboard_team(rows, {'id': view.get('account_id'), 'name': view.get('team_name')})
-    title = 'TEAM COMPARISON · TOP 4 OPPONENTS'
+    title = 'TEAM COMPARISON'
     if not own:
         return boxed(title, [paint('WAITING', YELLOW, bold=True)], width, BLUE)
-    own_rank = comparison_position(own, len(rows) + 1)
     opponents = sorted((row for row in rows if row is not own), key=lambda row: (comparison_position(row, len(rows) + 1), str(row.get('name') or '').casefold()))[:4]
     if not opponents:
         return boxed(title, [paint('NO OPPONENTS', YELLOW, bold=True)], width, BLUE)
+    displayed = sorted([*opponents, own], key=lambda row: (comparison_position(row, len(rows) + 1), str(row.get('name') or '').casefold()))
 
     challenges = sorted(
         ((int(challenge.get('id') or key), str(challenge.get('name') or f'Challenge {key}'))
@@ -1722,9 +1757,13 @@ def render_team_comparison(view: dict[str, object], width: int) -> list[str]:
         return float(value) if isinstance(value, (int, float)) and math.isfinite(value) else None
 
     own_total = float(own.get('total_score', own.get('score', 0)) or 0)
+    cell_width = max([cell_width, *(len(f'{theirs - ours:+.2f}') + 1
+        for row in displayed for key, name, _ in arenas
+        if (theirs := arena_points(row, key, name)) is not None
+        and (ours := arena_points(own, key, name)) is not None)])
     left_lines = [f"{'RK TEAM':<16}{'ΔPT':>8} " + ''.join(f'{label:^{cell_width}}' for _, _, label in arenas)]
     left_lines.append(paint('─' * (25 + cell_width * len(arenas)), GRAY))
-    for row in [*opponents, own]:
+    for row in displayed:
         total = float(row.get('total_score', row.get('score', 0)) or 0)
         line = f"#{comparison_position(row, len(rows) + 1):<2} {pad(truncate(str(row.get('name') or 'Team'), 12), 12)} {total - own_total:+7.0f} "
         for key, name, _ in arenas:
@@ -1743,7 +1782,7 @@ def render_team_comparison(view: dict[str, object], width: int) -> list[str]:
     ]
     visible = [(number, name) for number, name in challenges
                if not (number in own_solved and all(ids is not None and number in ids for ids in solved_by_opponent))]
-    headers = [f'#{comparison_position(row, len(rows) + 1)}' for row in opponents] + ['US']
+    headers = ['US' if row is own else f'#{comparison_position(row, len(rows) + 1)}' for row in displayed]
     content_width = max(1, width - 4)
     preferred_left = 28 + cell_width * len(arenas)
     minimum_right = 18 + 5 * len(headers)
@@ -1758,8 +1797,14 @@ def render_team_comparison(view: dict[str, object], width: int) -> list[str]:
         heading = 'CHALLENGE'
     right_lines.extend([pad(truncate(heading, name_width), name_width) + ''.join(f'{header:^5}' for header in headers), paint('─' * right_width, GRAY)])
     for number, name in visible:
-        cells = ''.join(comparison_status_cell(number in own_solved, number in ids) if ids is not None else paint(f"{'?':^5}", YELLOW) for ids in solved_by_opponent)
-        right_lines.append(pad(truncate(name, name_width), name_width) + cells + f"{'✓' if number in own_solved else '':^5}")
+        cells = []
+        for row in displayed:
+            if row is own:
+                cells.append(f"{'✓' if number in own_solved else '':^5}")
+            else:
+                ids = solved_by_opponent[next(index for index, opponent in enumerate(opponents) if opponent is row)]
+                cells.append(comparison_status_cell(number in own_solved, number in ids) if ids is not None else paint(f"{'?':^5}", YELLOW))
+        right_lines.append(pad(truncate(name, name_width), name_width) + ''.join(cells))
     if any(ids is None for ids in solved_by_opponent):
         right_lines.append(paint('? = solves unavailable', YELLOW))
     if side_by_side:
@@ -1770,12 +1815,14 @@ def render_team_comparison(view: dict[str, object], width: int) -> list[str]:
             lines.append(pad(truncate(left, left_width), left_width) + paint(' │ ', GRAY) + pad(truncate(right, right_width), right_width))
     else:
         lines = left_lines + [''] + right_lines
-    return boxed(f'{title} · OUR ACTUAL #{own_rank}', lines, width, BLUE)
+    return boxed(title, lines, width, BLUE)
 
 
 def competition_countdown(view: dict[str, object]) -> tuple[str, str]:
     value = str(view.get("contest_end") or "")
     if not value:
+        if view.get("contest_end_known"):
+            return "NO LIMIT", GRAY
         return "WAITING", YELLOW
     try:
         end = datetime.fromisoformat(value.replace("Z", "+00:00"))
@@ -1867,17 +1914,18 @@ def resource_series(resources: dict[str, object], value_index: int, width: int) 
         if not 0 <= index < width:
             continue
         buckets[index].append(float(sample[value_index]))
-    return [sum(bucket) / len(bucket) if bucket else None for bucket in buckets]
+    return [max(bucket) if bucket else None for bucket in buckets]
 
 
-def resource_chart(title: str, current: float, peak: float, values: list[float | None], width: int, color: str, detail: str = "") -> list[str]:
+def resource_chart(title: str, current: float, peak: float | None, values: list[float | None], width: int, color: str, detail: str = "") -> list[str]:
     height = 5
     plot_width = max(8, width - 6)
     values = values[-plot_width:]
     if len(values) < plot_width:
         values = [None] * (plot_width - len(values)) + values
     suffix = f"   {detail}" if detail else ""
-    lines = [f"{title:<8}{current:>5.1f}%   Peak {peak:>5.1f}%{suffix}"]
+    peak_text = f'{peak:>5.1f}%' if peak is not None else '    --'
+    lines = [f"{title:<8}{current:>5.1f}%   Peak {peak_text}{suffix}"]
     for row in range(height):
         row_base = (height - row - 1) * 8
         cells: list[str] = []
@@ -1897,6 +1945,8 @@ def resource_chart(title: str, current: float, peak: float, values: list[float |
 
 def codex_usage_line(usage: dict[str, object], width: int) -> str:
     if usage.get("status") not in {"LIVE", "ERROR"} or not isinstance(usage.get("remaining_percent"), (int, float)):
+        if usage.get("status") == "ERROR":
+            return f"CODEX WEEKLY  {paint('UNAVAILABLE', RED, bold=True)}"
         return f"CODEX WEEKLY  {paint('WAITING', YELLOW, bold=True)}"
     remaining = max(0.0, min(100.0, float(usage["remaining_percent"])))
     remaining_text = f"{remaining:.0f}%"
@@ -1931,35 +1981,34 @@ def render_resources(resources: dict[str, object], width: int, codex_usage: dict
     right_width = body_width - gap - left_width
     plot_width_left = max(8, left_width - 6)
     plot_width_right = max(8, right_width - 6)
-    samples = resources.get("samples", [])
-    cpu_values = [float(sample[1]) for sample in samples if isinstance(sample, (tuple, list)) and len(sample) > 2]
-    memory_values = [float(sample[2]) for sample in samples if isinstance(sample, (tuple, list)) and len(sample) > 2]
+    cpu_values = resource_series(resources, 1, plot_width_left)
+    memory_values = resource_series(resources, 2, plot_width_right)
     cpu = float(resources.get("cpu") or 0.0)
     memory = float(resources.get("memory") or 0.0)
     used_gib = float(resources.get("used_gib") or 0.0)
     total_gib = float(resources.get("total_gib") or 0.0)
     cpu_cores = int(resources.get("cpu_cores") or 1)
-    left = resource_chart("CPU", cpu, max([cpu, *cpu_values]), resource_series(resources, 1, plot_width_left), left_width, YELLOW, f"{cpu_cores} CORES")
-    right = resource_chart("MEMORY", memory, max([memory, *memory_values]), resource_series(resources, 2, plot_width_right), right_width, CYAN, f"{used_gib:.2f} / {total_gib:.2f} GiB")
+    left = resource_chart("CPU", cpu, max((v for v in cpu_values if v is not None), default=None), cpu_values, left_width, YELLOW, f"{cpu_cores} CORES")
+    right = resource_chart("MEMORY", memory, max((v for v in memory_values if v is not None), default=None), memory_values, right_width, CYAN, f"{used_gib:.2f} / {total_gib:.2f} GiB")
     chart_lines = [left[index] + " " * gap + right[index] for index in range(len(left))]
     return boxed("SYSTEM RESOURCES", ([codex_usage_line(codex_usage or {}, width - 4), ""] if CODEX_ENABLED else []) + chart_lines, width, YELLOW)
 
 
 def render_resources_compact(resources: dict[str, object], width: int, codex_usage: dict[str, object] | None = None) -> list[str]:
-    cpu = float(resources.get("cpu") or 0.0)
-    memory = float(resources.get("memory") or 0.0)
-    used_gib = float(resources.get("used_gib") or 0.0)
-    total_gib = float(resources.get("total_gib") or 0.0)
-    cpu_cores = int(resources.get("cpu_cores") or 1)
-    summary = f"CPU {cpu:.1f}% · {cpu_cores} CORES    MEMORY {memory:.1f}% · {used_gib:.2f}/{total_gib:.2f} GiB"
-    return boxed("SYSTEM RESOURCES · COMPACT", ([codex_usage_line(codex_usage or {}, width - 4)] if CODEX_ENABLED else []) + [summary], width, YELLOW)
+    lines = []
+    for label, key, index, color in (('CPU', 'cpu', 1, YELLOW), ('MEMORY', 'memory', 2, CYAN)):
+        prefix = f'{label:<6} {float(resources.get(key) or 0):5.1f}% '
+        values = resource_series(resources, index, max(1, width - 4 - display_width(prefix)))
+        graph = ''.join('·' if value is None else PARTIAL_BLOCKS[max(1, min(8, round(value * 8 / 100)))] for value in values)
+        lines.append(prefix + paint(graph, color))
+    return boxed("SYSTEM RESOURCES · 2m", ([codex_usage_line(codex_usage or {}, width - 4)] if CODEX_ENABLED else []) + lines, width, YELLOW)
 
 
 def render_koth_compact(view: dict[str, object], width: int) -> list[str]:
     entries = [entry for entry in view.get("koth", {}).values() if isinstance(entry, dict)]
     total = sum(float(entry["points"]) for entry in entries if isinstance(entry.get("points"), (int, float)))
     maximum = sum(float(KOTH_SOURCES.get(str(entry.get('id')), {}).get('max_points', KOTH_MAX_POINTS)) for entry in entries)
-    return boxed(f"KOTH · {len(entries)} ARENAS · PROJECTED {total:.2f} / {maximum:.0f} pt · COMPACT", [""], width, CYAN)
+    return boxed(f"KOTH · {len(entries)} ARENAS · {total:.2f} / {maximum:.0f} pt · COMPACT", [""], width, CYAN)
 
 
 def render_screen(view: dict[str, object], resources: dict[str, object] | None = None) -> str:
@@ -1981,23 +2030,31 @@ def render_screen(view: dict[str, object], resources: dict[str, object] | None =
     transfers = render_transfers(view, width)
     comparison = render_team_comparison(view, width)
 
-    def assemble(*, compact_resources: bool = False, compact_challenges: bool = False, event_limit: int = 4, include_events: bool = True, include_resources: bool = True, compact_koth: bool = False) -> list[str]:
-        resource_lines = (render_resources_compact(resources, width, view.get("codex_usage")) if compact_resources else render_resources(resources, width, view.get("codex_usage"))) if include_resources else []
+    def assemble(*, event_limit: int = 4, include_events: bool = True) -> list[str]:
+        resource_lines = render_resources(resources, width, view.get("codex_usage"))
         event_lines = render_events(view, width, limit=event_limit) if include_events else []
-        koth_lines = (render_koth_compact(view, width) if compact_koth else render_koth(view, width)) if KOTH_ENABLED else []
-        return header + resource_lines + render_challenges(view, left_width, right_width, compact=compact_challenges) + koth_lines + transfers + event_lines + comparison
+        koth_lines = render_koth(view, width) if KOTH_ENABLED else []
+        return header + resource_lines + render_challenges(view, left_width, right_width) + koth_lines + transfers + event_lines + comparison
 
     lines = assemble()
     if len(lines) > height:
-        lines = assemble(compact_resources=True)
+        lines = assemble(event_limit=1)
     if len(lines) > height:
-        lines = assemble(compact_resources=True, compact_challenges=True, event_limit=1)
+        lines = assemble(include_events=False)
     if len(lines) > height:
-        lines = assemble(compact_resources=True, compact_challenges=True, include_events=False)
-    if len(lines) > height:
-        lines = assemble(compact_challenges=True, include_events=False, include_resources=False)
-    if len(lines) > height:
-        lines = assemble(compact_challenges=True, include_events=False, include_resources=False, compact_koth=True)
+        # Reserve graphs and comparison first. A long problem list must not
+        # silently remove CPU/RAM history or push all comparison rows offscreen.
+        resource_lines = (render_resources if height >= 30 else render_resources_compact)(resources, width, view.get('codex_usage'))
+        remaining = max(0, height - len(header) - len(resource_lines))
+        koth_lines = render_koth(view, width) if KOTH_ENABLED else []
+        koth_budget = len(koth_lines) if remaining >= min(10, len(comparison)) + len(koth_lines) else 0
+        transfer_budget = min(len(transfers), 5) if remaining - koth_budget >= min(10, len(comparison)) + 3 else 0
+        comparison_budget = min(len(comparison), remaining - koth_budget - transfer_budget)
+        challenge_budget = remaining - koth_budget - transfer_budget - comparison_budget
+        lines = (header + resource_lines
+                 + render_challenges(view, left_width, right_width, max_rows=challenge_budget)
+                 + koth_lines[:koth_budget] + fit_panel(transfers, transfer_budget, width, BLUE)
+                 + fit_panel(comparison, comparison_budget, width, BLUE))
     if len(lines) > height:
         lines = lines[:height]
     return "\n".join(truncate(terminal_text(line), max(1, terminal.columns)) for line in lines)
@@ -2017,6 +2074,11 @@ def solid_warning_box(message: str, terminal_columns: int) -> list[str]:
 
 def terminal_size_warning_overlays(columns: int, rows: int) -> str:
     overlays: list[str] = []
+    if columns < 1 or rows < 1:
+        return ''
+    if columns < 4 or rows < 3:
+        message = '!' if columns < 9 else 'TOO SMALL'
+        return f'\033[1;1H{BOLD}{RED_BG}{WHITE}{message[:columns]}{RESET}'
 
     def place(box: list[str], row: int, column: int) -> None:
         for index, line in enumerate(box):
