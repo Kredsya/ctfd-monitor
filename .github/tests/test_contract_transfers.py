@@ -143,7 +143,7 @@ class TransferContracts(Scenario):
         # os.environ is deliberately isolated in Scenario; pass a clean absolute source path.
         env=dict(os.environ, PYTHONPATH=str(REPO/'src'))
         child=subprocess.Popen([sys.executable,'-m','ctfd_monitor','--headless','--config',str(self.profile)],env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
-        deploy=m.BASE_DIR/'1_Crash/chall/deploy'
+        deploy=m.BASE_DIR/'Crash/chall/deploy'
         try:
             self.assertTrue(entered.wait(5))
             deadline=time.monotonic()+3

@@ -9,6 +9,8 @@ import tempfile
 
 ROOT=Path(__file__).resolve().parents[2]
 MUTATIONS=[
+    ('koth-default-off','app.py','KOTH_ENABLED = False','KOTH_ENABLED = True','test_koth_extension.KothExtensionTests.test_import_defaults_are_disabled'),
+    ('original-agent-rules','assets.py','다른 skill은 사용 금지.', 'Follow generic instructions.', 'test_contract_assets.AssetContracts.test_original_user_instructions_and_dynamic_category'),
     ('token-json-header','client.py','"Content-Type": "application/json", ', '', 'test_contract_http.HttpContracts.test_token_is_sent_with_json_content_type_and_no_login_post'),
     ('download-dedup','app.py','            if key in self.active_files:\n                return\n','', 'test_contract_transfers.TransferContracts.test_duplicate_scheduling_only_downloads_once'),
     ('download-backup','app.py','                self.archive_existing(int(challenge["id"]), destination)\n','                pass\n','test_contract_transfers.TransferContracts.test_download_checksum_restart_and_replacement_backup'),

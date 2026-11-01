@@ -17,8 +17,9 @@ max_download_bytes = 1
 helpers = []
 ''')
         config=m.load_profile(self.profile)
-        for key in ('koth','codex_usage','auto_extract','account_mode','max_download_bytes','helpers'):
+        for key in ('codex_usage','auto_extract','account_mode','max_download_bytes','helpers'):
             self.assertNotIn(key,config)
+        self.assertFalse(config['koth'])
         m.configure(self.profile)
         self.assertEqual(m.HELPER_FILES,('22.sh','25.sh'))
         self.assertEqual(m.ACCOUNT_MODE,'auto')
@@ -31,7 +32,7 @@ helpers = []
         source={'42':{'adapter':'generic','url':self.url+'/scores','max_points':1500}}
         stop=ControlledStop(self.monitor,[lambda:self.monitor.update_koth_challenges({'42':challenge}),lambda:self.monitor.update_koth_challenges({})])
         self.monitor.stop=stop
-        with patch.object(m,'KOTH_SOURCES',source),patch.object(self.monitor,'refresh_generic_koth',return_value={'points':125,'score':10}) as read:
+        with patch.object(m,'KOTH_ENABLED',True),patch.object(m,'KOTH_SOURCES',source),patch.object(self.monitor,'fetch_koth_metrics',return_value={'points':125,'score':10}) as read:
             self.monitor.run_koth()
         self.assertEqual(read.call_count,1)
         self.assertEqual([bool(view['koth']) for _,view in stop.observed],[False,True,False])

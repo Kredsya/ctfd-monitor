@@ -14,6 +14,12 @@ spec=importlib.util.spec_from_file_location('lab_runner',Path(__file__).resolve(
 lab=importlib.util.module_from_spec(spec); spec.loader.exec_module(lab)
 
 class LabTests(unittest.TestCase):
+    def setUp(self):
+        enabled = patch.object(app, 'KOTH_ENABLED', True)
+        enabled.start(); self.addCleanup(enabled.stop)
+        sources = patch.object(app, 'KOTH_SOURCES', {})
+        sources.start(); self.addCleanup(sources.stop)
+
     def test_scores_ties_zero_and_integer_awards(self):
         self.assertEqual(lab.standings({'2':10,'1':10,'3':5}),[
             dict(team_id=1,raw_score=10,points=1500,rank=1),dict(team_id=2,raw_score=10,points=1500,rank=1),dict(team_id=3,raw_score=5,points=750,rank=3)])
@@ -65,8 +71,8 @@ class LabTests(unittest.TestCase):
         try:
             from unittest.mock import Mock
             monitor=object.__new__(app.Monitor);monitor.client=Mock()
-            monitor.client.request_json.return_value={'data':{'id':7,'name':'irrelevant'}}
-            result=monitor.refresh_generic_koth({'url':f'http://127.0.0.1:{server.server_port}','max_points':1500})
+            monitor.fetch_team=Mock(return_value={'id':7,'name':'irrelevant'})
+            result=monitor.fetch_koth_metrics({'adapter':'generic','url':f'http://127.0.0.1:{server.server_port}','max_points':1500})
             self.assertEqual(result['points'],750);self.assertEqual(result['rank'],2)
             self.assertNotIn('Authorization',captured[0]);self.assertNotIn('Cookie',captured[0])
         finally: server.shutdown();server.server_close();thread.join()
@@ -142,3 +148,18 @@ class LabTests(unittest.TestCase):
             self.assertIn('Alpha',display);self.assertIn('Beta',display);self.assertNotIn('BRK',display)
             koth='\n'.join(app.render_koth(view,120))
             self.assertIn('/ 1000 pt',koth)
+
+    def test_lab_profiles_explicitly_enable_valid_generic_sources(self):
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as directory:
+            runner=object.__new__(lab.Lab)
+            runner.directory=Path(directory)
+            runner.url='http://localhost:8000'
+            runner.args=SimpleNamespace(koth_port=8001)
+            runner.credentials={'tokens':{'lab-0-0':'fixture'},'password':'fixture'}
+            runner.games={'42':{'challenge_id':42}}
+            runner.profiles()
+            for mode in ('token','password'):
+                profile=load_profile(runner.directory/f'{mode}.toml')
+                self.assertIs(profile['koth'], True)
+                self.assertEqual(profile['koth_sources'][0]['adapter'],'generic')

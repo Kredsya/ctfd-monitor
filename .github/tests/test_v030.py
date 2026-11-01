@@ -129,7 +129,7 @@ class SetupReleaseContracts(unittest.TestCase):
                 if path==old: raise PermissionError('cleanup denied')
                 return unlink(path,*args,**kwargs)
             output=io.StringIO()
-            with patch('builtins.input',side_effect=['https://ctf.example','1']),patch('getpass.getpass',return_value='fixture-secret'),patch.object(installer,'verify',return_value=({'id':1},'ok')),patch.object(Path,'unlink',deny_old),contextlib.redirect_stdout(output):
+            with patch('builtins.input',side_effect=['https://ctf.example','1','Example CTF']),patch('getpass.getpass',return_value='fixture-secret'),patch.object(installer,'verify',return_value=({'id':1},'ok')),patch.object(Path,'unlink',deny_old),contextlib.redirect_stdout(output):
                 self.assertEqual(installer.main(root),0)
             self.assertTrue((local/'competition.toml').is_file())
             self.assertTrue(old.is_file())
@@ -151,7 +151,7 @@ class SetupReleaseContracts(unittest.TestCase):
                     local=root/'.ctfd-monitor-local'; local.mkdir()
                     profile=local/'competition.toml'; profile.write_text('old config')
                     output=io.StringIO()
-                    with patch('builtins.input',side_effect=['https://ctf.example','1']),patch('getpass.getpass',return_value='fixture-secret'),patch.object(installer,'verify',return_value=({'id':1},'ok')),contextlib.redirect_stdout(output):
+                    with patch('builtins.input',side_effect=['https://ctf.example','1','Example CTF']),patch('getpass.getpass',return_value='fixture-secret'),patch.object(installer,'verify',return_value=({'id':1},'ok')),contextlib.redirect_stdout(output):
                         self.assertEqual(installer.main(root),1)
                     self.assertIn(name,output.getvalue())
                     self.assertNotIn('설치 완료',output.getvalue())

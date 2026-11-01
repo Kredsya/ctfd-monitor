@@ -5,6 +5,13 @@ from scenarios import Scenario, m
 
 
 class ComparisonTests(Scenario):
+    def setUp(self):
+        super().setUp()
+        enabled = patch.object(m, 'KOTH_ENABLED', True)
+        enabled.start(); self.addCleanup(enabled.stop)
+        sources = patch.object(m, 'KOTH_SOURCES', {})
+        sources.start(); self.addCleanup(sources.stop)
+
     def view(self):
         view=self.monitor.state.view()
         view.update(team_name='Ours',account_id=7,scoreboard=[
@@ -36,16 +43,6 @@ class ComparisonTests(Scenario):
         self.assertNotIn('Arena Alpha',plain) # KOTH must not appear as a jeopardy solve.
         self.assertIn(m.RED_BG,rendered)
         self.assertIn(m.GREEN_BG,rendered)
-
-    def test_legacy_koth_columns_keep_original_labels(self):
-        view=self.view()
-        for row in view['scoreboard']:
-            row['koth_score_detail']={name:0 for name in ('King of the Brick-Breaker','Neural Dominion','SHIFT','BATTLE')}
-        view['scoreboard'][0]['koth_score_detail']['SHIFT']=50
-        with patch.object(m,'KOTH_SOURCES',{}):
-            plain=m.ANSI_RE.sub('','\n'.join(m.render_team_comparison(view,140)))
-        for text in ('BRK','NEU','SHF','BAT','+50','JEOPARDY CHALLENGE'):
-            self.assertIn(text,plain)
 
     def test_unknown_solves_are_not_unsolved_or_filtered_out(self):
         view=self.view();view['scoreboard'][0].pop('solved_challenge_ids')
@@ -101,3 +98,26 @@ class ComparisonTests(Scenario):
             self.monitor.enrich_comparison_solves(rows,{'id':7})
         self.assertEqual(rows[0]['solved_challenge_ids'],[2])
         self.assertEqual([p for p,_ in self.requests],['/api/v1/users/1/solves'])
+
+    def test_unconfigured_scoreboard_extensions_never_create_koth_columns(self):
+        view = self.view()
+        for row in view['scoreboard']:
+            row['koth_score_detail'] = {'Old arena': 999}
+        plain = m.ANSI_RE.sub('', '\n'.join(m.render_team_comparison(view, 140)))
+        self.assertNotIn('Old arena', plain)
+        self.assertIn('JEOPARDY CHALLENGE', plain)
+
+    def test_adapter_points_drive_comparison_independently_of_custom_scoreboard(self):
+        view = self.view()
+        view['challenges']['42'] = self.challenge(id=42, name='Arena')
+        view['koth'] = {'42': {'status':'LIVE', 'team_points':{'1':150, '7':100, '2':75}}}
+        for row in view['scoreboard']:
+            row['koth_score_detail'] = {'Arena': 999}
+        with patch.object(m, 'KOTH_SOURCES', {'42': {'max_points':1000}}):
+            plain = m.ANSI_RE.sub('', '\n'.join(m.render_team_comparison(view, 160)))
+            self.assertIn('+50.00', plain)
+            self.assertIn('-25.00', plain)
+            view['koth']['42']['status'] = 'ERROR'
+            stale = m.ANSI_RE.sub('', '\n'.join(m.render_team_comparison(view, 160)))
+            self.assertNotIn('+50.00', stale)
+            self.assertIn('?', stale)

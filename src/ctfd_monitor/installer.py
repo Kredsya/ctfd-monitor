@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import getpass
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -13,7 +12,7 @@ import uuid
 import shutil
 
 from .client import ApiError, CTFdClient
-from .assets import validate_checkout
+from .assets import validate_checkout, safe_directory_name
 from . import __version__
 
 
@@ -83,7 +82,10 @@ def setup(root: Path) -> None:
     user, status = verify(client)
     print(status)
     validate_checkout(root)
-    identity = hashlib.sha256(f"{url}:{user['id']}".encode()).hexdigest()[:12]
+    contest_name = input("대회 이름: ").strip()
+    if not contest_name:
+        raise ValueError("대회 이름을 입력하세요.")
+    directory = safe_directory_name(contest_name)
     local = root / '.ctfd-monitor-local'
     if local.is_symlink():
         raise ValueError('설정 디렉터리는 심볼릭 링크일 수 없습니다.')
@@ -92,12 +94,13 @@ def setup(root: Path) -> None:
     secret = local / f'credentials-{uuid.uuid4().hex}.json'
     private_write(secret, json.dumps(credentials, ensure_ascii=False))
     profile = {
-        'name': urllib.parse.urlsplit(url).netloc,
+        'name': contest_name,
         'url': url,
-        'root': f'../workspace/{identity}',
+        'root': f'../workspace/{directory}',
         'credentials_file': secret.name,
         'poll_interval': 5.0,
         'max_workers': 4,
+        'koth': False,
     }
     def toml_value(value):
         return json.dumps(value, ensure_ascii=False)
@@ -114,7 +117,7 @@ def setup(root: Path) -> None:
             except OSError:
                 print('새 설정은 저장됐지만 이전 인증 파일을 정리하지 못했습니다. .ctfd-monitor-local/의 파일 권한을 확인하세요.')
     print('설치 완료. 실행: python3 ctfd-monitor.py')
-    print(f'작업 폴더: {root / "workspace" / identity}')
+    print(f'작업 폴더: {root / "workspace" / directory}')
     print('문제마다 22.sh(4개 창), 25.sh(10개 창), chall/AGENTS.md를 준비합니다.')
     if not shutil.which('tmux'):
         print('창 분할을 사용하려면 tmux를 설치하세요 (Ubuntu/Debian: sudo apt install tmux). 모니터는 바로 실행할 수 있습니다.')

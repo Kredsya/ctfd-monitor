@@ -6,8 +6,8 @@ from __future__ import annotations
 from .archives import extract
 from .config import load_profile, load_credentials
 from .client import ApiError, CTFdClient, SafeRedirect
-from .assets import REQUIRED_HELPERS, DEFAULT_AGENTS, find_helpers
-from . import __version__
+from .assets import REQUIRED_HELPERS, LEGACY_DEFAULT_AGENTS, agents_markdown, find_helpers, safe_directory_name
+from . import __version__, koth
 
 import argparse
 import concurrent.futures
@@ -48,6 +48,7 @@ USERNAME = os.environ.get("CTFD_MONITOR_USER", "")
 PASSWORD = os.environ.get("CTFD_MONITOR_PASSWORD", "")
 TOKEN = os.environ.get("CTFD_MONITOR_TOKEN", "")
 TITLE = "CTFd Monitor"
+KOTH_ENABLED = False
 KOTH_SOURCES = {}
 AGENTS_TEMPLATE = None
 HEADLESS = False
@@ -67,6 +68,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 BASE_DIR = Path(os.environ.get("CTFD_MONITOR_ROOT", SCRIPT_DIR))
 STATE_DIR = Path(os.environ.get("CTFD_MONITOR_STATE", BASE_DIR / ".ctfd-monitor"))
 CURRENT_FILE = STATE_DIR / "current.json"
+DIRECTORIES_FILE = STATE_DIR / "directories.json"
 EVENT_FILE = STATE_DIR / "events.jsonl"
 SNAPSHOT_DIR = STATE_DIR / "snapshots"
 ARCHIVE_DIR = STATE_DIR / "archive"
@@ -77,7 +79,6 @@ LOCK_FILE = STATE_DIR / "monitor.lock"
 STAGING_DIR = STATE_DIR / "staging"
 HELPER_FILES = REQUIRED_HELPERS
 KOTH_POLL_INTERVAL = 2.0 if TEST_MODE else 10.0
-KOTH_MAX_POINTS = 1500.0
 CODEX_USAGE_POLL_INTERVAL = 10.0 if TEST_MODE else 12.0
 SOLVE_POLL_INTERVAL = 2.0 if TEST_MODE else 10.0
 CONFIG_POLL_INTERVAL = 10.0
@@ -208,18 +209,6 @@ def description_text(value: object) -> str:
     return parser.text()
 
 
-def safe_directory_name(value: object) -> str:
-    name = re.sub(r"\s+", "_", str(value).strip())
-    # Helpers send a quoted cd command to worker shells. Do not let remote
-    # titles introduce shell substitutions or terminate those quotes.
-    name = re.sub(r'[/\\"$`\x00-\x1f\x7f]', "_", name)
-    if name in {"", ".", ".."}:
-        name = "unnamed_challenge"
-    encoded = name.encode("utf-8")
-    if len(encoded) > 220:
-        name = encoded[:220].decode("utf-8", errors="ignore").rstrip("._ ")
-    return name or "unnamed_challenge"
-
 
 def safe_file_name(value: str, fallback: str) -> str:
     name = Path(urllib.parse.unquote(value)).name
@@ -307,11 +296,8 @@ def file_url(entry: object) -> str | None:
 
 
 def is_koth_challenge(challenge: object) -> bool:
-    if not isinstance(challenge, dict):
-        return False
-    if str(challenge.get("id")) in KOTH_SOURCES:
-        return True
-    return str(challenge.get("type") or "").casefold() == "koth_challenge" or str(challenge.get("category") or "").casefold() == "koth"
+    # KOTH extension entry point: see koth.py and .github/USAGE.md#koth.
+    return KOTH_ENABLED and isinstance(challenge, dict) and str(challenge.get("id")) in KOTH_SOURCES
 
 
 @dataclass
@@ -445,12 +431,22 @@ class Monitor:
         self.state = state
         self.stop = stop
         self.client = CTFdClient(BASE_URL, USERNAME, PASSWORD, TOKEN)
-        self.koth_client = CTFdClient(BASE_URL, USERNAME, PASSWORD, TOKEN)
         self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS)
         self.previous = read_json(CURRENT_FILE, {"challenges": {}, "team": {}})
+        if not isinstance(self.previous, dict):
+            self.previous = {"challenges": {}, "team": {}}
+        challenges = self.previous.get("challenges", {})
+        self.previous["challenges"] = {key: value for key, value in challenges.items()
+                                       if isinstance(value, dict)} if isinstance(challenges, dict) else {}
         self.manifest = read_json(MANIFEST_FILE, {})
         if not isinstance(self.manifest, dict):
             self.manifest = {}
+        saved_directories = read_json(DIRECTORIES_FILE, {})
+        self.challenge_directories = {
+            str(key): value for key, value in saved_directories.items()
+            if isinstance(value, str) and value and not value.startswith('.')
+            and Path(value).name == value
+        } if isinstance(saved_directories, dict) else {}
         self.helpers = self.find_helpers()
         self.active_files: set[tuple[int, str]] = set()
         self.active_lock = threading.Lock()
@@ -458,12 +454,10 @@ class Monitor:
         self.validation_cache: dict[str, tuple[int, int, str]] = {}
         self.event_lock = threading.RLock()
         self.event_ids: set[str] = set()
-        self.koth_cache = read_json(KOTH_FILE, {"entries": {}, "brick_rounds": {}})
+        self.koth_cache = read_json(KOTH_FILE, {"entries": {}}) if KOTH_ENABLED else {"entries": {}}
         if not isinstance(self.koth_cache, dict):
-            self.koth_cache = {"entries": {}, "brick_rounds": {}}
+            self.koth_cache = {"entries": {}}
         self.koth_lock = threading.RLock()
-        self.koth_sessions: set[int] = set()
-        self.brick_latest_refresh = 0.0
         self.koth_challenges = self.load_koth_challenges()
         self.codex_usage_cache = read_json(CODEX_USAGE_FILE, {})
         if not isinstance(self.codex_usage_cache, dict):
@@ -477,27 +471,9 @@ class Monitor:
         self.restore_saved_state()
 
     def load_koth_challenges(self) -> dict[str, dict[str, object]]:
-        challenges = self.previous.get("challenges", {}) if isinstance(self.previous, dict) else {}
-        output = {str(key): copy.deepcopy(value) for key, value in challenges.items() if is_koth_challenge(value)} if isinstance(challenges, dict) else {}
-        try:
-            latest = max(SNAPSHOT_DIR.glob("*.json"), key=lambda path: path.stat().st_mtime_ns)
-            raw = read_json(latest, {})
-            details = raw.get("challenge_details", []) if isinstance(raw, dict) else []
-            for detail in details if isinstance(details, list) else []:
-                if not is_koth_challenge(detail):
-                    continue
-                key = str(detail.get("id"))
-                challenge = output.setdefault(key, {"id": detail.get("id")})
-                for field in ("name", "category", "type", "value", "koth_url", "launch_url", "koth_namespace"):
-                    if detail.get(field) not in (None, ""):
-                        challenge[field] = detail[field]
-                challenge.setdefault("solved", False)
-                challenge.setdefault("directory", safe_directory_name(challenge.get("name") or f"challenge_{key}"))
-                if isinstance(challenges, dict) and isinstance(challenges.get(key), dict):
-                    challenges[key].update({field: challenge[field] for field in ("type", "koth_url", "launch_url", "koth_namespace") if field in challenge})
-        except (OSError, ValueError):
-            pass
-        return output
+        challenges = self.previous.get("challenges", {})
+        return {str(key): copy.deepcopy(value) for key, value in challenges.items()
+                if is_koth_challenge(value)} if isinstance(challenges, dict) else {}
 
     def restore_saved_state(self) -> None:
         challenges = self.previous.get("challenges", {}) if isinstance(self.previous, dict) else {}
@@ -506,6 +482,8 @@ class Monitor:
         koth: dict[str, dict[str, object]] = {}
         for key, challenge in self.koth_challenges.items():
             previous = saved_entries.get(key, {}) if isinstance(saved_entries, dict) else {}
+            if not isinstance(previous, dict) or previous.get("source") != KOTH_SOURCES.get(key):
+                previous = {}
             koth[key] = {
                 "id": int(challenge.get("id") or key),
                 "name": str(challenge.get("name") or f"KOTH {key}"),
@@ -547,8 +525,6 @@ class Monitor:
             if isinstance(entries, dict):
                 for key in removed:
                     entries.pop(key, None)
-            active_ids = {int(challenge.get("id") or 0) for challenge in latest.values()}
-            self.koth_sessions.intersection_update(active_ids)
             with self.state.lock:
                 for key in removed:
                     self.state.koth.pop(key, None)
@@ -557,177 +533,30 @@ class Monitor:
             if removed:
                 atomic_json(KOTH_FILE, self.koth_cache)
 
-    def ensure_koth_session(self, challenge: dict[str, object], *, force: bool = False) -> None:
-        challenge_id = int(challenge.get("id") or 0)
-        if challenge_id in self.koth_sessions and not force:
-            return
-        if not self.koth_client.logged_in:
-            self.koth_client.login()
-        launch_url = str(challenge.get("launch_url") or "")
-        if not launch_url:
-            raise RuntimeError("KOTH launch URL is missing")
-        request = urllib.request.Request(urllib.parse.urljoin(BASE_URL + "/", launch_url.lstrip("/")), headers={"User-Agent": "ctfd-monitor/1.0"})
-        with self.koth_client.opener.open(request, timeout=20) as response:
-            response.read()
-        self.koth_sessions.add(challenge_id)
-
-    def koth_json(self, challenge: dict[str, object], url: str, *, session: bool = False) -> dict[str, object]:
-        if str(challenge.get('id')) in KOTH_SOURCES:
-            # Explicit sources are public adapters, isolated from CTFd sessions.
-            request = urllib.request.Request(url, headers={'Accept': 'application/json'})
-            with urllib.request.urlopen(request, timeout=20) as response:
-                value = json.load(response)
-            if not isinstance(value, dict):
-                raise RuntimeError('unexpected KOTH response')
-            return value
-        if session:
-            self.ensure_koth_session(challenge)
-        request = urllib.request.Request(url, headers={"Accept": "application/json", "User-Agent": "ctfd-monitor/1.0"})
-        try:
-            with self.koth_client.opener.open(request, timeout=20) as response:
-                value = json.load(response)
-        except urllib.error.HTTPError as error:
-            if not session or error.code not in {401, 403}:
-                raise
-            self.koth_sessions.discard(int(challenge.get("id") or 0))
-            self.ensure_koth_session(challenge, force=True)
-            with self.koth_client.opener.open(request, timeout=20) as response:
-                value = json.load(response)
-        if not isinstance(value, dict):
-            raise RuntimeError("unexpected KOTH response")
-        return value
-
-    @staticmethod
-    def projected_points(score: float, leader_score: float) -> float:
-        if leader_score <= 0:
-            return 0.0
-        return min(KOTH_MAX_POINTS, KOTH_MAX_POINTS * score / leader_score)
-
-    def refresh_brick_koth(self, challenge: dict[str, object], team_name: str) -> dict[str, object]:
-        base = str(challenge.get("koth_url") or "").rstrip("/")
-        state = self.koth_json(challenge, base + "/api/client-state")
-        rounds = [int(value) for value in state.get("leaderboard_rounds", []) if str(value).isdigit()]
-        cache = self.koth_cache.setdefault("brick_rounds", {})
-        if not isinstance(cache, dict):
-            cache = {}
-            self.koth_cache["brick_rounds"] = cache
-        refresh = {number for number in rounds if str(number) not in cache}
-        if rounds and time.monotonic() - self.brick_latest_refresh >= 60.0:
-            refresh.add(rounds[-1])
-            self.brick_latest_refresh = time.monotonic()
-        for number in sorted(refresh):
-            first = self.koth_json(challenge, f"{base}/api/leaderboard?round={number}&page=1")
-            items = list(first.get("leaderboard", [])) if isinstance(first.get("leaderboard"), list) else []
-            pages = max(1, int(first.get("pages") or 1))
-            for page in range(2, pages + 1):
-                value = self.koth_json(challenge, f"{base}/api/leaderboard?round={number}&page={page}")
-                if isinstance(value.get("leaderboard"), list):
-                    items.extend(value["leaderboard"])
-            scores: dict[str, float] = {}
-            for item in items:
-                if not isinstance(item, dict):
-                    continue
-                metrics = item.get("metrics")
-                score = metrics.get("score") if isinstance(metrics, dict) else None
-                name = str(item.get("team") or "")
-                if name and isinstance(score, (int, float)):
-                    scores[name] = max(scores.get(name, 0.0), float(score))
-            cache[str(number)] = scores
-        totals: dict[str, float] = {}
-        for number in rounds:
-            values = cache.get(str(number), {})
-            if isinstance(values, dict):
-                for name, score in values.items():
-                    if isinstance(score, (int, float)):
-                        totals[str(name)] = totals.get(str(name), 0.0) + float(score)
-        ordered = sorted(totals.items(), key=lambda item: (-item[1], item[0].casefold()))
-        score = totals.get(team_name, 0.0)
-        rank = next((index for index, (name, _) in enumerate(ordered, start=1) if name == team_name), None)
-        leader = ordered[0][1] if ordered else 0.0
-        return {"rank": rank, "teams": len(ordered), "score": score, "leader_score": leader, "points": self.projected_points(score, leader), "rounds": len(rounds)}
-
-    def refresh_neural_koth(self, challenge: dict[str, object], team_name: str) -> dict[str, object]:
-        base = str(challenge.get("koth_url") or "").rstrip("/")
-        value = self.koth_json(challenge, base + "/api/leaderboard")
-        teams = value.get("teams", []) if isinstance(value.get("teams"), list) else []
-        own = next((team for team in teams if isinstance(team, dict) and str(team.get("name")) == team_name), None)
-        leader = teams[0] if teams and isinstance(teams[0], dict) else {}
-        score = float(own.get("koth") or 0) if isinstance(own, dict) else 0.0
-        points = float(own.get("normalized_score") or 0) if isinstance(own, dict) else 0.0
-        return {"rank": int(own["rank"]) if isinstance(own, dict) and own.get("rank") is not None else None, "teams": len(teams), "score": score, "leader_score": float(leader.get("koth") or 0), "points": points}
-
-    def refresh_shift_koth(self, challenge: dict[str, object]) -> dict[str, object]:
-        base = str(challenge.get("koth_url") or "").rstrip("/")
-        value = self.koth_json(challenge, base + "/api/score", session=True)
-        return {"rank": int(value["rank"]) if value.get("rank") is not None else None, "teams": int(value.get("teams") or 0), "score": float(value.get("accumulated_score") or 0), "leader_score": float(value.get("first_rank_team_score") or 0), "points": float(value.get("score") or 0), "rounds": int(value.get("matches_played") or 0)}
-
-    def refresh_battle_koth(self, challenge: dict[str, object]) -> dict[str, object]:
-        base = str(challenge.get("koth_url") or "").rstrip("/")
-        value = self.koth_json(challenge, base + "/army/api/standings", session=True)
-        standings = value.get("standings") if isinstance(value.get("standings"), dict) else {}
-        teams = standings.get("teams", []) if isinstance(standings.get("teams"), list) else []
-        own = next((team for team in teams if isinstance(team, dict) and team.get("is_self") is True), None)
-        leader = teams[0] if teams and isinstance(teams[0], dict) else {}
-        score = float(own.get("points") or 0) if isinstance(own, dict) else 0.0
-        leader_score = float(leader.get("points") or 0)
-        return {"rank": int(own["rank"]) if isinstance(own, dict) and own.get("rank") is not None else None, "teams": len(teams), "score": score, "leader_score": leader_score, "points": self.projected_points(score, leader_score), "rounds": int(own.get("scored_games") or 0) if isinstance(own, dict) else 0}
-
-    def refresh_generic_koth(self, source):
-        # Deliberately independent of both CTFd cookie jars and Authorization headers.
-        request = urllib.request.Request(source['url'], headers={'Accept': 'application/json'})
-        with urllib.request.urlopen(request, timeout=20) as response:
-            value = json.load(response)
-        if not isinstance(value, dict) or not isinstance(value.get('teams'), list):
-            raise ValueError('Invalid generic KOTH standings')
-        team = self.client.request_json('/api/v1/teams/me')['data']
-        rows = value['teams']
-        scores = {}
-        for row in rows:
-            identifier = int(row['team_id'])
-            score = float(row['raw_score'])
-            if identifier in scores or not math.isfinite(score) or score < 0:
-                raise ValueError('Invalid generic KOTH score')
-            scores[identifier] = score
-        leader = max(scores.values(), default=0)
-        score = scores.get(int(team['id']), 0)
-        maximum = float(source['max_points'])
-        table = {str(key): int(maximum * raw / leader) if leader else 0 for key, raw in scores.items()}
-        return {'rank': 1 + sum(raw > score for raw in scores.values()) if int(team['id']) in scores else None,
-                'teams': len(scores), 'score': score, 'leader_score': leader, 'points': table.get(str(team['id']), 0),
-                'rounds': value.get('round'), 'team_points': table, 'max_points': maximum}
+    def fetch_koth_metrics(self, source):
+        # Only the account ID crosses the boundary, never the CTFd client/session.
+        account = self.fetch_team()
+        return koth.fetch(source, int(account['id']))
 
     def refresh_koth(self) -> None:
+        if not KOTH_ENABLED:
+            return
         with self.koth_lock:
             challenges = copy.deepcopy(self.koth_challenges)
-        with self.state.lock:
-            team_name = self.state.team_name
         entries = self.koth_cache.setdefault("entries", {})
         if not isinstance(entries, dict):
             entries = {}
             self.koth_cache["entries"] = entries
         for key, challenge in sorted(challenges.items(), key=lambda item: int(item[1].get("id") or 0)):
-            entry = copy.deepcopy(entries.get(key, {})) if isinstance(entries.get(key), dict) else {}
+            source = KOTH_SOURCES.get(key)
+            if source is None:
+                continue
+            cached = entries.get(key, {})
+            entry = copy.deepcopy(cached) if isinstance(cached, dict) and cached.get("source") == source else {}
+            entry["source"] = copy.deepcopy(source)
             entry.update({"id": int(challenge.get("id") or key), "name": str(challenge.get("name") or f"KOTH {key}")})
             try:
-                challenge_id = int(challenge.get("id") or 0)
-                source = KOTH_SOURCES.get(str(challenge_id), {})
-                adapter = source.get('adapter') or {7: 'brick', 9: 'neural', 16: 'shift', 17: 'battle'}.get(challenge_id)
-                if source:
-                    challenge = dict(challenge, koth_url=source['url'])
-                if adapter == 'generic':
-                    metrics = self.refresh_generic_koth(source)
-                elif adapter == 'brick':
-                    metrics = self.refresh_brick_koth(challenge, team_name)
-                elif adapter == 'neural':
-                    metrics = self.refresh_neural_koth(challenge, team_name)
-                elif adapter == 'shift':
-                    metrics = self.refresh_shift_koth(challenge)
-                elif adapter == 'battle':
-                    metrics = self.refresh_battle_koth(challenge)
-                else:
-                    raise RuntimeError("unsupported KOTH adapter")
-                if source and adapter != 'generic':
-                    metrics['points'] = float(metrics.get('points') or 0) * float(source['max_points']) / KOTH_MAX_POINTS
+                metrics = self.fetch_koth_metrics(source)
                 entry.update(metrics)
                 entry.update({"status": "LIVE", "error": "", "updated_at": iso_now()})
             except Exception as error:
@@ -742,6 +571,8 @@ class Monitor:
             atomic_json(KOTH_FILE, self.koth_cache)
 
     def run_koth(self) -> None:
+        if not KOTH_ENABLED:
+            return
         while not self.stop.is_set():
             if self.koth_challenges:
                 self.refresh_koth()
@@ -957,10 +788,38 @@ class Monitor:
                 output.append({"id": hint.get("id"), "name": hint.get("name") or hint.get("title"), "cost": hint.get("cost"), "content": hint.get("content")})
         return output
 
+    def challenge_directory(self, challenge_id: int, title: str) -> str:
+        previous = self.previous.get("challenges", {})
+        # Reserve every saved name before allocating newly published challenges.
+        for key, challenge in previous.items():
+            if isinstance(challenge, dict) and challenge.get("directory"):
+                self.challenge_directories[str(key)] = str(challenge["directory"])
+        key = str(challenge_id)
+        if key in self.challenge_directories:
+            return self.challenge_directories[key]
+        occupied = {name.casefold() for name in self.challenge_directories.values()}
+        if BASE_DIR.is_dir():
+            occupied.update(path.name.casefold() for path in BASE_DIR.iterdir())
+        base = safe_directory_name(title)
+        candidate = base
+        suffix = 2
+        while candidate.casefold() in occupied:
+            candidate = f"{base}_{suffix}"
+            suffix += 1
+        self.challenge_directories[key] = candidate
+        # Persist identity before any worker can create/download files. A crash may
+        # happen before current.json is committed; recovery must reuse this folder.
+        try:
+            atomic_json(DIRECTORIES_FILE, self.challenge_directories)
+        except OSError:
+            self.challenge_directories.pop(key, None)
+            raise
+        return candidate
+
     def normalize_challenge(self, summary: dict[str, object], detail: dict[str, object]) -> dict[str, object]:
         challenge_id = int(detail.get("id") or summary.get("id") or 0)
         old = self.previous.get("challenges", {}).get(str(challenge_id), {})
-        title = str(detail.get("name") or summary.get("name") or f"challenge_{challenge_id}")
+        title = str(detail.get("name") or summary.get("name") or "Unnamed challenge")
         return {
             "id": challenge_id,
             "name": title,
@@ -971,10 +830,7 @@ class Monitor:
             "description": description_text(detail.get("description") or ""),
             "hints": self.normalize_hints(detail.get("hints")),
             "files": self.normalize_files(detail.get("files")),
-            "directory": str(old.get("directory") or f"{challenge_id}_{safe_directory_name(title)}"),
-            "koth_url": str(detail.get("koth_url") or old.get("koth_url") or ""),
-            "launch_url": str(detail.get("launch_url") or old.get("launch_url") or ""),
-            "koth_namespace": str(detail.get("koth_namespace") or old.get("koth_namespace") or ""),
+            "directory": self.challenge_directory(challenge_id, title),
         }
 
     def prepare_challenge(self, challenge: dict[str, object]) -> Path:
@@ -991,10 +847,18 @@ class Monitor:
         description = f"# {challenge['name']}\n\n{challenge['description']}\n"
         (chall_dir / "README.md").write_text(description, encoding="utf-8")
         agents_path = chall_dir / "AGENTS.md"
-        if not agents_path.exists():
-            instructions = AGENTS_TEMPLATE.read_text(encoding="utf-8") if AGENTS_TEMPLATE else DEFAULT_AGENTS
-            instructions += f"\nLatest problem description: {chall_dir / 'README.md'}\n"
+        existing = agents_path.read_text(encoding="utf-8") if agents_path.exists() else None
+        legacy = LEGACY_DEFAULT_AGENTS + f"\nLatest problem description: {chall_dir / 'README.md'}\n"
+        old = self.previous.get("challenges", {}).get(str(challenge["id"]), {})
+        previous_generated = agents_markdown(str(old.get("name", "")), str(old.get("category", "")), str(old.get("description", "")))
+        generated = agents_markdown(str(challenge["name"]), str(challenge["category"]), str(challenge["description"]))
+        # Only replace known generated text. Preserve user edits and custom templates.
+        if existing is None:
+            instructions = AGENTS_TEMPLATE.read_text(encoding="utf-8") if AGENTS_TEMPLATE else generated
             agents_path.write_text(instructions, encoding="utf-8")
+        elif not AGENTS_TEMPLATE and existing in (legacy, previous_generated) and existing != generated:
+            self.archive_existing(int(challenge["id"]), agents_path)
+            agents_path.write_text(generated, encoding="utf-8")
         return deploy_dir
 
     def archive_existing(self, challenge_id: int, destination: Path) -> None:
@@ -1453,7 +1317,6 @@ class Monitor:
             raise ApiError("/api/v2/challenges", 500, "unexpected challenge list")
         normalized: dict[str, dict[str, object]] = {}
         raw_details: list[dict[str, object]] = []
-        used_directories: set[str] = set()
         for summary in summaries:
             if not isinstance(summary, dict) or "id" not in summary:
                 continue
@@ -1462,11 +1325,6 @@ class Monitor:
             if not isinstance(detail, dict):
                 continue
             challenge = self.normalize_challenge(summary, detail)
-            directory = str(challenge["directory"])
-            if directory in used_directories:
-                directory = safe_directory_name(f"{directory}_{challenge['id']}")
-                challenge["directory"] = directory
-            used_directories.add(directory)
             normalized[str(challenge["id"])] = challenge
             raw_details.append(detail)
         team = self.fetch_team()
@@ -1684,10 +1542,12 @@ def render_challenges(view: dict[str, object], left_width: int, right_width: int
 
 
 def render_koth(view: dict[str, object], width: int) -> list[str]:
-    entries = sorted(view.get("koth", {}).values(), key=lambda entry: (int(entry.get("id") or 0), str(entry.get("name") or "").casefold()))
+    if not KOTH_ENABLED:
+        return []
+    entries = sorted((entry for key, entry in view.get("koth", {}).items() if str(key) in KOTH_SOURCES), key=lambda entry: (int(entry.get("id") or 0), str(entry.get("name") or "").casefold()))
     known_points = [float(entry["points"]) for entry in entries if isinstance(entry.get("points"), (int, float))]
     total = sum(known_points)
-    maximum = sum(float(KOTH_SOURCES.get(str(entry.get('id')), {}).get('max_points', KOTH_MAX_POINTS)) for entry in entries)
+    maximum = sum(float(KOTH_SOURCES.get(str(entry.get('id')), {}).get('max_points', entry.get('max_points', 0))) for entry in entries)
     lines: list[str] = []
     formatted = []
     for entry in entries:
@@ -1697,8 +1557,8 @@ def render_koth(view: dict[str, object], width: int) -> list[str]:
         rank_text = f"#{rank}/{teams}" if rank is not None and teams else "--/--"
         points = entry.get("points")
         points_text = f"{float(points):.0f}" if isinstance(points, (int, float)) else "--"
-        entry_maximum = float(KOTH_SOURCES.get(str(entry.get('id')), {}).get('max_points', KOTH_MAX_POINTS))
-        ratio = max(0.0, min(1.0, float(points) / entry_maximum)) if isinstance(points, (int, float)) else 0.0
+        entry_maximum = float(KOTH_SOURCES.get(str(entry.get('id')), {}).get('max_points', entry.get('max_points', 0)))
+        ratio = max(0.0, min(1.0, float(points) / entry_maximum)) if isinstance(points, (int, float)) and entry_maximum > 0 else 0.0
         state = ""
         if entry.get("status") == "ERROR":
             state = paint("  STALE", RED, bold=True) if points is not None else paint("  UNAVAILABLE", RED, bold=True)
@@ -1783,31 +1643,23 @@ def render_team_comparison(view: dict[str, object], width: int) -> list[str]:
     )
     # Preserve the original comparison layout; only the data sources vary.
     arenas = []
-    active_koth = {str(key) for key in view.get('koth', {})}
-    active_koth.update(str(c.get('id', key)) for key, c in view.get('challenges', {}).items() if is_koth_challenge(c))
-    if active_koth:
-        names = {str(c.get('id', key)): str(c.get('name') or key) for key, c in view.get('challenges', {}).items() if isinstance(c, dict)}
-        for key in sorted(active_koth, key=int):
-            name = names.get(key) or str(view.get('koth', {}).get(key, {}).get('name') or key)
-            arenas.append((key, name, name if display_width(name) <= 10 else f'K{key}'))
-    else:
-        details = {name for row in rows if isinstance(row.get('koth_score_detail'), dict)
-                   for name in row['koth_score_detail']}
-        labels = {'King of the Brick-Breaker': 'BRK', 'Neural Dominion': 'NEU', 'SHIFT': 'SHF', 'BATTLE': 'BAT'}
-        arenas = [(None, name, labels.get(name, name[:10])) for name in sorted(details)]
-    cell_width = max([5, *(display_width(label) for _, _, label in arenas)]) + (1 if KOTH_SOURCES else 0)
+    active_koth = set(KOTH_SOURCES) if KOTH_ENABLED else set()
+    names = {str(c.get('id', key)): str(c.get('name') or key)
+             for key, c in view.get('challenges', {}).items() if isinstance(c, dict)}
+    for key in sorted(active_koth, key=int):
+        if key not in view.get('koth', {}) and key not in names:
+            continue
+        name = names.get(key) or str(view.get('koth', {}).get(key, {}).get('name') or key)
+        arenas.append((key, name, name if display_width(name) <= 10 else f'K{key}'))
+    cell_width = max([5, *(display_width(label) for _, _, label in arenas)]) + (1 if arenas else 0)
 
     def arena_points(row, key, name):
-        if key is None:
-            detail = row.get('koth_score_detail')
-            value = detail.get(name) if isinstance(detail, dict) else None
-        else:
-            entry = view.get('koth', {}).get(key, {})
-            if entry.get('status') != 'LIVE':
-                return None
-            points = entry.get('team_points', {})
-            identifier = str(row.get('account_id', row.get('id', '')))
-            value = points.get(identifier) if isinstance(points, dict) else None
+        entry = view.get('koth', {}).get(key, {})
+        if entry.get('status') != 'LIVE':
+            return None
+        points = entry.get('team_points', {})
+        identifier = str(row.get('account_id', row.get('id', '')))
+        value = points.get(identifier) if isinstance(points, dict) else None
         return float(value) if isinstance(value, (int, float)) and math.isfinite(value) else None
 
     own_total = float(own.get('total_score', own.get('score', 0)) or 0)
@@ -2093,9 +1945,11 @@ def render_resources_compact(resources: dict[str, object], width: int, codex_usa
 
 
 def render_koth_compact(view: dict[str, object], width: int) -> list[str]:
-    entries = [entry for entry in view.get("koth", {}).values() if isinstance(entry, dict)]
+    if not KOTH_ENABLED:
+        return []
+    entries = [entry for key, entry in view.get("koth", {}).items() if str(key) in KOTH_SOURCES and isinstance(entry, dict)]
     total = sum(float(entry["points"]) for entry in entries if isinstance(entry.get("points"), (int, float)))
-    maximum = sum(float(KOTH_SOURCES.get(str(entry.get('id')), {}).get('max_points', KOTH_MAX_POINTS)) for entry in entries)
+    maximum = sum(float(KOTH_SOURCES.get(str(entry.get('id')), {}).get('max_points', entry.get('max_points', 0))) for entry in entries)
     return boxed(f"KOTH · {len(entries)} ARENAS · {total:.0f} / {maximum:.0f} pt · COMPACT", [""], width, CYAN)
 
 
@@ -2202,7 +2056,8 @@ def main() -> int:
         koth_worker = threading.Thread(target=monitor.run_koth, name="ctfd-koth")
         codex_usage_worker = threading.Thread(target=monitor.run_codex_usage, name="codex-usage")
         worker.start()
-        koth_worker.start()
+        if KOTH_ENABLED:
+            koth_worker.start()
         codex_usage_worker.start()
         deadline = time.monotonic() + float(os.environ.get("CTFD_MONITOR_TEST_DURATION", "0")) if TEST_MODE and os.environ.get("CTFD_MONITOR_TEST_DURATION") else None
         sys.stdout.write("\033[?25l")
@@ -2255,7 +2110,8 @@ def main() -> int:
             signal.signal(signal.SIGWINCH, previous_sigwinch_handler)
             stop.set()
             worker.join()
-            koth_worker.join()
+            if KOTH_ENABLED:
+                koth_worker.join()
             codex_usage_worker.join()
             sys.stdout.write("\033[0m\033[2J\033[H\033[?25h")
             sys.stdout.flush()
@@ -2274,7 +2130,10 @@ def headless_main() -> int:
     try:
         state = SharedState()
         monitor = Monitor(state, stop)
-        for target in (monitor.run, monitor.run_koth, monitor.run_codex_usage):
+        targets = [monitor.run, monitor.run_codex_usage]
+        if KOTH_ENABLED:
+            targets.append(monitor.run_koth)
+        for target in targets:
             worker = threading.Thread(target=target)
             worker.start()
             workers.append(worker)
@@ -2293,7 +2152,7 @@ def headless_main() -> int:
 
 def configure(path: Path | None) -> None:
     global BASE_URL, USERNAME, PASSWORD, TOKEN, TITLE, BASE_DIR, STATE_DIR
-    global KOTH_SOURCES, HELPER_FILES, AGENTS_TEMPLATE, POLL_INTERVAL, MAX_WORKERS
+    global KOTH_ENABLED, KOTH_SOURCES, HELPER_FILES, AGENTS_TEMPLATE, POLL_INTERVAL, MAX_WORKERS
     global CONTEST_END, ACCOUNT_MODE
     config = load_profile(path)
     anchor = path.resolve().parent if path else Path.cwd()
@@ -2328,12 +2187,13 @@ def configure(path: Path | None) -> None:
         parsed_end = datetime.fromisoformat(CONTEST_END.replace('Z', '+00:00'))
         if parsed_end.tzinfo is None:
             raise ValueError('contest_end requires a timezone')
+    KOTH_ENABLED = config.get('koth', False)
     KOTH_SOURCES = {str(source['challenge_id']): source for source in config.get('koth_sources', [])}
     HELPER_FILES = REQUIRED_HELPERS
     AGENTS_TEMPLATE = local(config['agents_template']) if config.get('agents_template') else None
     if AGENTS_TEMPLATE and not AGENTS_TEMPLATE.is_file():
         raise ValueError('agents_template does not exist')
-    names = {'CURRENT_FILE': 'current.json', 'EVENT_FILE': 'events.jsonl', 'SNAPSHOT_DIR': 'snapshots', 'ARCHIVE_DIR': 'archive', 'MANIFEST_FILE': 'manifest.json', 'KOTH_FILE': 'koth.json', 'CODEX_USAGE_FILE': 'codex-usage.json', 'LOCK_FILE': 'monitor.lock', 'STAGING_DIR': 'staging'}
+    names = {'CURRENT_FILE': 'current.json', 'DIRECTORIES_FILE': 'directories.json', 'EVENT_FILE': 'events.jsonl', 'SNAPSHOT_DIR': 'snapshots', 'ARCHIVE_DIR': 'archive', 'MANIFEST_FILE': 'manifest.json', 'KOTH_FILE': 'koth.json', 'CODEX_USAGE_FILE': 'codex-usage.json', 'LOCK_FILE': 'monitor.lock', 'STAGING_DIR': 'staging'}
     for name, relative in names.items():
         globals()[name] = STATE_DIR / relative
 

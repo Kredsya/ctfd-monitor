@@ -51,3 +51,56 @@ class AssetContracts(Scenario):
         for name in ('22.sh','25.sh'):
             self.assertEqual((problem/name).read_bytes(), (m.BASE_DIR/name).read_bytes())
         self.assertEqual((problem/'solution.py').read_text(), 'my work')
+
+    def test_original_user_instructions_and_dynamic_category(self):
+        original = (REPO / '.github/tests/fixtures/original/AGENTS.md').read_text()
+        for category in ('web', 'Cryptography', 'pwnable', '리버싱'):
+            with self.subTest(category=category):
+                challenge = self.challenge(name='문제 {name}', category=category, description='설명 {literal}\nsecond line')
+                deploy = self.monitor.prepare_challenge(challenge)
+                expected = original.replace('<문제 제목>', challenge['name']).replace('<web, crypto, pwnable, 등등>', category).replace('<문제 설명>', challenge['description']).replace('너는 Cryptography 분야의 천재이다.', f'너는 {category} 분야의 천재이다.')
+                expected = expected.replace('## Role', '## Files\n문제에서 제공된 파일은 `./deploy/` 디렉토리에 있다.\n\n## Role')
+                self.assertEqual((deploy.parent / 'AGENTS.md').read_text(), expected)
+                self.monitor.previous = {'challenges': {'1': challenge}}
+
+    def test_legacy_generated_instructions_migrate_with_backup(self):
+        from ctfd_monitor.assets import LEGACY_DEFAULT_AGENTS
+        challenge = self.challenge()
+        deploy = self.monitor.prepare_challenge(challenge)
+        agents = deploy.parent / 'AGENTS.md'
+        legacy = LEGACY_DEFAULT_AGENTS + f"\nLatest problem description: {deploy.parent / 'README.md'}\n"
+        agents.write_text(legacy)
+        self.monitor.prepare_challenge(challenge)
+        self.assertIn('너는 misc 분야의 천재이다.', agents.read_text())
+        self.assertEqual([p.read_text() for p in m.ARCHIVE_DIR.glob('1/*/AGENTS.md')], [legacy])
+        self.monitor.prepare_challenge(challenge)
+        self.assertEqual(len(list(m.ARCHIVE_DIR.glob('1/*/AGENTS.md'))), 1)
+
+    def test_generated_description_refresh_after_restart_preserves_user_edits(self):
+        self.publish([{'id':1,'name':'First','category':'web','description':'old'}])
+        current = self.cycle()
+        agents = m.BASE_DIR / current['challenges']['1']['directory'] / 'chall/AGENTS.md'
+        restarted = self.new_monitor()
+        self.publish([{'id':1,'name':'Renamed','category':'crypto','description':'new'}])
+        self.cycle(restarted)
+        self.assertIn('# Renamed\n분야: crypto\n\n## description\nnew', agents.read_text())
+        edited = agents.read_text() + '\nMy solution notes\n'
+        agents.write_text(edited)
+        self.publish([{'id':1,'name':'Third','description':'latest'}])
+        self.cycle(restarted)
+        self.assertEqual(agents.read_text(), edited)
+        self.assertIn('latest', (agents.parent/'README.md').read_text())
+
+    def test_edited_legacy_and_custom_template_are_preserved_exactly(self):
+        from ctfd_monitor.assets import LEGACY_DEFAULT_AGENTS
+        deploy = self.monitor.prepare_challenge(self.challenge())
+        agents = deploy.parent/'AGENTS.md'
+        edited = LEGACY_DEFAULT_AGENTS + '\nuser notes'
+        agents.write_text(edited)
+        self.monitor.prepare_challenge(self.challenge())
+        self.assertEqual(agents.read_text(), edited)
+        agents.unlink()
+        template = self.root/'custom.txt'; template.write_text('custom {category}\n')
+        with patch.object(m, 'AGENTS_TEMPLATE', template):
+            self.monitor.prepare_challenge(self.challenge())
+        self.assertEqual(agents.read_text(), template.read_text())

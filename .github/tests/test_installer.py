@@ -117,6 +117,7 @@ class InstallerTests(unittest.TestCase):
                     with self.subTest(mode=mode):
                         answers = [('대회 URL: ', f'http://127.0.0.1:{server.server_port}'), ('비밀번호]: ', mode)]
                         answers += [('CTFd 토큰: ', 'test-secret-token')] if mode == '1' else [('아이디: ', 'player'), ('비밀번호: ', 'test-secret-password')]
+                        answers += [("대회 이름: ", "Example CTF")]
                         code, transcript = interactive_install(root, answers, env)
                         self.assertEqual(code, 0, transcript)
                         self.assertNotIn('test-secret-token', transcript)
@@ -124,6 +125,9 @@ class InstallerTests(unittest.TestCase):
                         profile = root / '.ctfd-monitor-local/competition.toml'
                         config = load_profile(profile)
                         self.assertNotIn('account_mode',config)
+                        self.assertIs(config['koth'], False)
+                        self.assertEqual(config['root'], '../workspace/Example_CTF')
+                        self.assertEqual(config['name'], 'Example CTF')
                         secret = profile.parent / config['credentials_file']
                         self.assertEqual(secret.stat().st_mode & 0o777, 0o600)
                         self.assertEqual(profile.parent.stat().st_mode & 0o777, 0o700)
@@ -149,7 +153,7 @@ class InstallerTests(unittest.TestCase):
                             errors = process.stderr.read()
                             process.stdout.close(); process.stderr.close()
                         self.assertEqual(process.returncode, 0, errors)
-                        problem = (profile.parent / config['root']).resolve() / '1_Installed_problem'
+                        problem = (profile.parent / config['root']).resolve() / 'Installed_problem'
                         self.assertEqual((problem/'chall/deploy/provided.txt').read_bytes(),b'provided attachment')
                         self.assertTrue((problem/'chall/AGENTS.md').is_file())
                         for helper in ('22.sh','25.sh'):

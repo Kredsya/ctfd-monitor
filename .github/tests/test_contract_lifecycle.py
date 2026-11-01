@@ -14,7 +14,7 @@ class LifecycleContracts(Scenario):
         self.assertEqual(events, ['NEW','UPDATED','SOLVED','DELETED'])
         self.cycle(self.new_monitor())
         self.assertEqual(len(m.EVENT_FILE.read_text().splitlines()), 4)
-        self.assertTrue((m.BASE_DIR/'1_One/chall').is_dir())
+        self.assertTrue((m.BASE_DIR/'One/chall').is_dir())
 
     def test_team_only_change_is_persisted_for_restart(self):
         self.publish([]); self.cycle()

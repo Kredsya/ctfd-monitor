@@ -34,7 +34,7 @@ finally:
             env['PYTHONPATH']=str(installed)
             result=subprocess.run([sys.executable,'-c',code],cwd=root,env=env,capture_output=True,text=True,timeout=10)
             self.assertEqual(result.returncode,0,result.stderr)
-            problem=root/'work/1_Wheel_problem'
+            problem=root/'work/Wheel_problem'
             self.assertTrue((problem/'chall/AGENTS.md').is_file())
             self.assertIn('supplied description',(problem/'chall/README.md').read_text())
             for name in ('22.sh','25.sh'):

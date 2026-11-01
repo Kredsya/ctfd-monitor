@@ -50,7 +50,7 @@ class SetupContracts(unittest.TestCase):
 
     def test_auth_failure_does_not_save_or_echo_remote_secret(self):
         output=io.StringIO()
-        with patch('builtins.input',side_effect=['https://ctf.example','1']), patch('getpass.getpass',return_value='fixture-secret'), patch.object(installer,'verify',side_effect=ApiError('/auth',401,'fixture-secret')), contextlib.redirect_stdout(output):
+        with patch('builtins.input',side_effect=['https://ctf.example','1','Example CTF']), patch('getpass.getpass',return_value='fixture-secret'), patch.object(installer,'verify',side_effect=ApiError('/auth',401,'fixture-secret')), contextlib.redirect_stdout(output):
             self.assertEqual(installer.main(self.root),1)
         self.assertFalse((self.root/'.ctfd-monitor-local').exists())
         self.assertNotIn('fixture-secret',output.getvalue())
@@ -65,7 +65,7 @@ class SetupContracts(unittest.TestCase):
             writes.append(path.name)
             if path.name=='competition.toml': raise OSError('disk full')
             return original(path,text)
-        with patch('builtins.input',side_effect=['https://ctf.example','1']), patch('getpass.getpass',return_value='new-secret'), patch.object(installer,'verify',return_value=({'id':1},'ok')), patch.object(installer,'private_write',side_effect=fail_commit), contextlib.redirect_stdout(io.StringIO()):
+        with patch('builtins.input',side_effect=['https://ctf.example','1','Example CTF']), patch('getpass.getpass',return_value='new-secret'), patch.object(installer,'verify',return_value=({'id':1},'ok')), patch.object(installer,'private_write',side_effect=fail_commit), contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(installer.main(self.root),1)
         self.assertEqual(profile.read_text(),'old profile')
         self.assertEqual(old.read_text(),'old secret')
@@ -75,7 +75,7 @@ class SetupContracts(unittest.TestCase):
     def test_setup_must_not_report_success_with_missing_required_assets(self):
         for name in ('22.sh','25.sh'): (self.root/'helpers'/name).unlink()
         output=io.StringIO()
-        with patch('builtins.input',side_effect=['https://ctf.example','1']), patch('getpass.getpass',return_value='fixture-secret'), patch.object(installer,'verify',return_value=({'id':1},'ok')), contextlib.redirect_stdout(output):
+        with patch('builtins.input',side_effect=['https://ctf.example','1','Example CTF']), patch('getpass.getpass',return_value='fixture-secret'), patch.object(installer,'verify',return_value=({'id':1},'ok')), contextlib.redirect_stdout(output):
             self.assertNotEqual(installer.main(self.root),0,'A checkout with neither helper is incomplete')
         self.assertFalse((self.root/'.ctfd-monitor-local/competition.toml').exists())
 

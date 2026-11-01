@@ -247,7 +247,7 @@ class Lab:
         for mode in ('token','password'):
             credentials = {'token':self.credentials['tokens']['lab-0-0']} if mode=='token' else {'username':'lab-0-0','password':self.credentials['password']}
             save(self.directory/f'{mode}-credentials.json', credentials)
-            text = f'name = "Local lab {mode}"\nurl = "{self.url}"\nroot = "{mode}-workspace"\nstate = "{mode}-state"\ncredentials_file = "{mode}-credentials.json"\npoll_interval = 1\n'+sources
+            text = f'name = "Local lab {mode}"\nurl = "{self.url}"\nroot = "{mode}-workspace"\nstate = "{mode}-state"\ncredentials_file = "{mode}-credentials.json"\npoll_interval = 1\nkoth = true\n'+sources
             (self.directory/f'{mode}.toml').write_text(text)
 
     def serve(self,kind,port):

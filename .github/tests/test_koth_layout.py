@@ -8,6 +8,12 @@ from ctfd_monitor import app as m
 
 
 class KothLayoutTests(unittest.TestCase):
+    def setUp(self):
+        enabled = patch.object(m, 'KOTH_ENABLED', True)
+        enabled.start(); self.addCleanup(enabled.stop)
+        sources = patch.object(m, 'KOTH_SOURCES', {str(i): {'max_points': 1500} for i in (101,102,103,*range(201,221))})
+        sources.start(); self.addCleanup(sources.stop)
+
     def view(self, unsolved=9, solved=3):
         view = m.SharedState().view()
         challenges = {str(i): dict(id=i, name=f'Problem {i}', category=f'Category {i // 3}',

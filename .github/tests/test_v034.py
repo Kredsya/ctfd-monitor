@@ -1,11 +1,19 @@
 """Tick-centred graphs, integer KOTH display and closed-event standings."""
 import copy
+from unittest.mock import patch
 import re
 from scenarios import Scenario, m
 from test_contract_runtime import ControlledStop
 
 
 class DisplayAndScoreTests(Scenario):
+    def setUp(self):
+        super().setUp()
+        enabled = patch.object(m, 'KOTH_ENABLED', True)
+        enabled.start(); self.addCleanup(enabled.stop)
+        sources = patch.object(m, 'KOTH_SOURCES', {str(i): {'max_points': 1500} for i in (1,2)})
+        sources.start(); self.addCleanup(sources.stop)
+
     def test_tick_centres_and_user_reported_46_percent(self):
         values=[0,5,10,20,30,40,46.2,50,60,80,90.5,92.5,100]
         lines=[m.ANSI_RE.sub('',s) for s in m.resource_chart('CPU',17,46.2,values,len(values)+6,m.YELLOW)]

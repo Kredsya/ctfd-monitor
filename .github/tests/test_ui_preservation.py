@@ -6,6 +6,13 @@ from scenarios import Scenario, m
 
 
 class UIPreservationTests(Scenario):
+    def setUp(self):
+        super().setUp()
+        enabled = patch.object(m, 'KOTH_ENABLED', True)
+        enabled.start(); self.addCleanup(enabled.stop)
+        sources = patch.object(m, 'KOTH_SOURCES', {})
+        sources.start(); self.addCleanup(sources.stop)
+
     def test_header_keeps_countdown_without_label(self):
         with patch.object(m,'competition_countdown',return_value=('01:23:45',m.CYAN)),patch.object(m.shutil,'get_terminal_size',return_value=os.terminal_size((120,61))):
             text=m.ANSI_RE.sub('',m.render_screen(self.view(),self.resources()))

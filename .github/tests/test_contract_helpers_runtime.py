@@ -2,6 +2,7 @@
 import json
 import fcntl
 import pty
+import json
 import select
 import struct
 import termios
@@ -27,9 +28,9 @@ class HelperRuntimeContracts(unittest.TestCase):
                 script=problem/name; shutil.copy2(REPO/'helpers'/name,script)
                 binaries=root/'bin'; binaries.mkdir()
                 wrapper=binaries/'tmux'
-                wrapper.write_text('#!/usr/bin/env python3\nimport os,sys\na=["-f","/dev/null"]+sys.argv[1:]\nif "attach-session" in a: sys.exit(0)\nos.execv('+repr(tmux)+', ['+repr(tmux)+']+a)\n')
+                wrapper.write_text('#!/usr/bin/env python3\nimport os,sys,json\nwith open(os.environ["TMUX_COMMAND_LOG"],"a") as log: log.write(json.dumps(sys.argv[1:])+"\\n")\na=["-f","/dev/null"]+sys.argv[1:]\nif "attach-session" in a: sys.exit(0)\nos.execv('+repr(tmux)+', ['+repr(tmux)+']+a)\n')
                 wrapper.chmod(0o755)
-                env=dict(os.environ, TMUX_TMPDIR=str(root), PATH=str(binaries)+os.pathsep+os.environ['PATH'])
+                env=dict(os.environ, TMUX_COMMAND_LOG=str(root/'commands.jsonl'), TMUX_TMPDIR=str(root), PATH=str(binaries)+os.pathsep+os.environ['PATH'])
                 env.pop('TMUX',None)
                 try:
                     subprocess.run(['bash','-n',str(script)],check=True,capture_output=True)
@@ -42,6 +43,20 @@ class HelperRuntimeContracts(unittest.TestCase):
                         self.assertEqual((worker/'deploy/data').read_text(),'provided')
                     panes=subprocess.run([tmux,'-L','ctf-codex-drag','list-panes','-a'],env=env,capture_output=True,text=True,check=True)
                     self.assertEqual(len(panes.stdout.splitlines()),count)
+                    commands = [json.loads(line) for line in (root/'commands.jsonl').read_text().splitlines()]
+                    startup = [command for command in commands if command[2:3] == ['send-keys']]
+                    self.assertEqual(len(startup), count, 'Only one cd command per pane; no c or /goal')
+                    self.assertEqual({command[-2] for command in startup},
+                                     {f'cd "{problem}/dist_{i}"' for i in range(1, count+1)})
+                    self.assertTrue(all(command[-1] == 'C-m' for command in startup))
+                    expected_paths = {str(problem/f'dist_{i}') for i in range(1, count+1)}
+                    deadline = time.monotonic()+4
+                    while True:
+                        actual_paths = set(subprocess.check_output([tmux,'-L','ctf-codex-drag','list-panes','-a','-F','#{pane_current_path}'],env=env,text=True).splitlines())
+                        if actual_paths == expected_paths or time.monotonic() >= deadline:
+                            break
+                        time.sleep(0.05)
+                    self.assertEqual(actual_paths, expected_paths)
                     session=subprocess.check_output([tmux,'-L','ctf-codex-drag','list-sessions','-F','#{session_name}'],env=env,text=True).strip()
                     master,slave=pty.openpty()
                     fcntl.ioctl(slave,termios.TIOCSWINSZ,struct.pack('HHHH',60,180,0,0))

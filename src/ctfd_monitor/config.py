@@ -2,9 +2,10 @@
 import math
 import tomllib
 from pathlib import Path
+from .koth import ADAPTERS
 
 STRINGS = {'name', 'url', 'root', 'state', 'agents_template', 'username_env', 'password_env', 'token_env', 'contest_end', 'credentials_file'}
-LEGACY_AUTOMATIC_KEYS = {'koth', 'codex_usage', 'auto_extract', 'account_mode', 'max_download_bytes', 'helpers'}
+LEGACY_AUTOMATIC_KEYS = {'codex_usage', 'auto_extract', 'account_mode', 'max_download_bytes', 'helpers'}
 INTEGERS = {'max_workers'}
 
 
@@ -13,7 +14,7 @@ def load_profile(path: Path | None) -> dict:
     for key in LEGACY_AUTOMATIC_KEYS:
         if key in config:
             value = config[key]
-            if key in {'koth', 'codex_usage', 'auto_extract'} and type(value) is not bool:
+            if key in {'codex_usage', 'auto_extract'} and type(value) is not bool:
                 raise ValueError(f'{key} must be boolean')
             if key == 'account_mode' and value not in ('auto', 'teams', 'users'):
                 raise ValueError('account_mode must be auto, teams or users')
@@ -22,7 +23,7 @@ def load_profile(path: Path | None) -> dict:
             if key == 'max_download_bytes' and (type(value) is not int or value < 1):
                 raise ValueError('max_download_bytes must be a positive integer')
         config.pop(key, None)
-    unknown = set(config) - STRINGS - INTEGERS - {'poll_interval', 'koth_sources'}
+    unknown = set(config) - STRINGS - INTEGERS - {'poll_interval', 'koth', 'koth_sources'}
     if unknown:
         raise ValueError(f"Unknown configuration keys: {', '.join(sorted(unknown))}")
     for key, value in config.items():
@@ -35,6 +36,8 @@ def load_profile(path: Path | None) -> dict:
     for key in ('username_env', 'password_env', 'token_env'):
         if key in config and (not config[key] or '=' in config[key] or '\x00' in config[key]):
             raise ValueError(f'{key} must name an environment variable')
+    if type(config.get('koth', False)) is not bool:
+        raise ValueError('koth must be boolean')
     sources = config.get('koth_sources', [])
     if not isinstance(sources, list):
         raise ValueError('koth_sources must be a list')
@@ -47,8 +50,8 @@ def load_profile(path: Path | None) -> dict:
         if type(identifier) is not int or identifier < 1 or identifier in seen:
             raise ValueError('KOTH challenge_id must be positive and unique')
         seen.add(identifier)
-        if not isinstance(source['adapter'], str) or source['adapter'] not in {'generic', 'brick', 'neural', 'shift', 'battle'}:
-            raise ValueError('Unknown KOTH adapter')
+        if not isinstance(source['adapter'], str) or source['adapter'] not in ADAPTERS:
+            raise ValueError('Unknown KOTH adapter; see src/ctfd_monitor/koth.py and .github/USAGE.md#koth')
         if not isinstance(source['url'], str):
             raise ValueError('KOTH url must be HTTP(S)')
         url = urlsplit(source['url'])
@@ -58,6 +61,8 @@ def load_profile(path: Path | None) -> dict:
         maximum = source['max_points']
         if type(maximum) not in (int, float) or not math.isfinite(maximum) or maximum <= 0:
             raise ValueError('KOTH max_points must be finite and positive')
+    if config.get('koth', False) and not sources:
+        raise ValueError('koth=true requires koth_sources; see .github/USAGE.md#koth')
     return config
 
 

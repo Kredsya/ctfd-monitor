@@ -53,7 +53,7 @@ class IntegrationTests(unittest.TestCase):
                     reader.start()
                     try:
                         deadline = time.monotonic() + 10
-                        attachment = root / 'work/1_Demo/chall/deploy/demo.txt'
+                        attachment = root / 'work/Demo/chall/deploy/demo.txt'
                         while time.monotonic() < deadline:
                             if attachment.exists() and list((root / 'work/.ctfd-monitor').glob('*/current.json')):
                                 break
