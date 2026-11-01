@@ -111,6 +111,7 @@ class InstallerTests(unittest.TestCase):
                         if (REPO / name).is_file():
                             shutil.copy2(REPO / name, root / name)
                 env = {k:v for k,v in os.environ.items() if not k.startswith('CTFD_MONITOR_') and k != 'PYTHONPATH'}
+                env['PATH'] = os.defpath  # Isolate optional local Codex accounts.
                 for mode in ('1', '2'):
                     with self.subTest(mode=mode):
                         answers = [('대회 URL: ', f'http://127.0.0.1:{server.server_port}'), ('비밀번호]: ', mode)]
@@ -121,7 +122,7 @@ class InstallerTests(unittest.TestCase):
                         self.assertNotIn('test-secret-password', transcript)
                         profile = root / '.ctfd-monitor-local/competition.toml'
                         config = load_profile(profile)
-                        self.assertEqual(config['account_mode'], 'users')
+                        self.assertNotIn('account_mode',config)
                         secret = profile.parent / config['credentials_file']
                         self.assertEqual(secret.stat().st_mode & 0o777, 0o600)
                         self.assertEqual(profile.parent.stat().st_mode & 0o777, 0o700)

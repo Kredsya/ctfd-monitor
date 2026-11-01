@@ -28,9 +28,7 @@ class UIPreservationTests(Scenario):
                         top=m.ANSI_RE.sub('',lines[2]).split('100% ┤',2)[1]
                         self.assertTrue(any(c in top for c in '▁▂▃▄▅▆▇█'))
 
-    def test_codex_enabled_profile_keeps_usage_in_full_and_small_screen(self):
-        self.profile.write_text(self.profile.read_text()+'\ncodex_usage = true\n')
-        m.configure(self.profile)
+    def test_codex_detected_usage_is_visible_without_profile_toggle(self):
         view=self.view(count=80)
         view['codex_usage']={'status':'LIVE','remaining_percent':0,'credits_balance':'23.50','competition_start_credits':'100'}
         for cols,rows in ((109,54),(120,61),(80,24)):
@@ -98,9 +96,9 @@ class UIPreservationTests(Scenario):
         sources={str(n):{'max_points':1500} for n in (101,102,103)}
         for cols,rows in ((106,61),(109,54),(120,60),(180,70)):
             for count in (16,80):
-                with self.subTest(cols=cols,rows=rows,count=count),patch.object(m,'KOTH_ENABLED',True),patch.object(m,'KOTH_SOURCES',sources),patch.object(m.shutil,'get_terminal_size',return_value=os.terminal_size((cols,rows))):
+                with self.subTest(cols=cols,rows=rows,count=count),patch.object(m,'KOTH_SOURCES',sources),patch.object(m.shutil,'get_terminal_size',return_value=os.terminal_size((cols,rows))):
                     screen=m.ANSI_RE.sub('',m.render_screen(self.view(count=count),self.resources()))
-                    for label in ('SYSTEM RESOURCES','CPU','MEMORY','100% ┤','0% ┼','2m ago','TEAM COMPARISON','KOTH 101','KOTH 102','KOTH 103'):
+                    for label in ('SYSTEM RESOURCES','CPU','MEMORY','100% ┤','0% └','2m ago','TEAM COMPARISON','KOTH 101','KOTH 102','KOTH 103'):
                         self.assertIn(label,screen)
                     self.assertLessEqual(len(screen.splitlines()),rows)
                     self.assertTrue(all(m.display_width(line)<=cols for line in screen.splitlines()))

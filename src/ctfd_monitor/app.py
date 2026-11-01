@@ -48,24 +48,19 @@ USERNAME = os.environ.get("CTFD_MONITOR_USER", "")
 PASSWORD = os.environ.get("CTFD_MONITOR_PASSWORD", "")
 TOKEN = os.environ.get("CTFD_MONITOR_TOKEN", "")
 TITLE = "CTFd Monitor"
-KOTH_ENABLED = False
 KOTH_SOURCES = {}
-CODEX_ENABLED = False
 AGENTS_TEMPLATE = None
-AUTO_EXTRACT = False
-MAX_DOWNLOAD_BYTES = 2 * 1024**3
 HEADLESS = False
 CONTEST_END = ""
 ACCOUNT_MODE = "auto"
 POLL_INTERVAL = 0.5 if TEST_MODE else 5.0
-BADGE_TTL = 5.0 if TEST_MODE else 300.0
+BADGE_TTL = 60.0
 DONE_TTL = 5.0
 MAX_WORKERS = 4
 UI_REFRESH_INTERVAL = 1.0
 RESOURCE_SAMPLE_INTERVAL = 1.0
 RESOURCE_HISTORY_SECONDS = 120.0
-RESOURCE_MAX_BUCKET_SECONDS = RESOURCE_HISTORY_SECONDS / 8
-RESOURCE_RETENTION_SECONDS = RESOURCE_HISTORY_SECONDS + RESOURCE_MAX_BUCKET_SECONDS
+RESOURCE_RETENTION_SECONDS = RESOURCE_HISTORY_SECONDS
 RESOURCE_HISTORY_SAMPLES = int(RESOURCE_RETENTION_SECONDS / RESOURCE_SAMPLE_INTERVAL) + 2
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -101,6 +96,7 @@ GRAY = f"{ESC}38;5;245m"
 WHITE = f"{ESC}38;5;255m"
 GREEN_BG = f"{ESC}48;2;35;48;42m"
 RED_BG = f"{ESC}48;2;52;38;41m"
+OWN_TEAM_BG = f"{ESC}48;2;45;65;78m"
 COMPARISON_GREEN = f"{ESC}38;2;166;191;174m"
 COMPARISON_RED = f"{ESC}38;2;203;173;177m"
 ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
@@ -385,9 +381,6 @@ class ResourceSampler:
             self.last_sample = now
             self.samples.append((now, self.current_cpu, self.current_memory))
 
-        # Keep one extra maximum-width bucket. The graph only advances on a
-        # completed bucket boundary, so dropping at exactly two minutes would
-        # make its left edge disappear before the next visual tick.
         cutoff = now - RESOURCE_RETENTION_SECONDS
         while self.samples and self.samples[0][0] < cutoff:
             self.samples.popleft()
@@ -415,7 +408,7 @@ class SharedState:
         self.contest_end_known = bool(CONTEST_END)
         self.challenges: dict[str, dict[str, object]] = {}
         self.koth: dict[str, dict[str, object]] = {}
-        self.codex_usage: dict[str, object] = {"status": "WAITING"}
+        self.codex_usage: dict[str, object] = {"status": "ABSENT"}
         self.events: list[dict[str, object]] = []
         self.jobs: list[TransferJob] = []
 
@@ -523,6 +516,13 @@ class Monitor:
             if isinstance(challenges, dict) and challenges:
                 self.state.status = "STALE"
                 self.state.challenges = copy.deepcopy(challenges)
+                for key, challenge in self.state.challenges.items():
+                    if not isinstance(challenge, dict):
+                        continue
+                    identifier = str(challenge.get('id') or key)
+                    marker = self.marker_for(int(identifier)) if identifier.isdigit() else None
+                    challenge['marker'] = marker[0] if marker else None
+                    challenge['marker_expires'] = marker[1] if marker else None
             if isinstance(team, dict):
                 self.state.account_id = team.get('id')
                 self.state.team_name = str(team.get("name") or USERNAME)
@@ -737,8 +737,6 @@ class Monitor:
             atomic_json(KOTH_FILE, self.koth_cache)
 
     def run_koth(self) -> None:
-        if not KOTH_ENABLED:
-            return
         while not self.stop.is_set():
             if self.koth_challenges:
                 self.refresh_koth()
@@ -823,9 +821,15 @@ class Monitor:
                     pipe.close()
 
     def run_codex_usage(self) -> None:
-        if not CODEX_ENABLED:
-            return
         while not self.stop.is_set():
+            if not shutil.which("codex"):
+                with self.state.lock:
+                    self.state.codex_usage = {"status": "ABSENT"}
+                self.stop.wait(CODEX_USAGE_POLL_INTERVAL)
+                continue
+            with self.state.lock:
+                if self.state.codex_usage.get("status") == "ABSENT":
+                    self.state.codex_usage = {"status": "WAITING"}
             try:
                 usage = self.read_codex_weekly_usage()
             except Exception as error:
@@ -912,6 +916,13 @@ class Monitor:
                 if event.get("challenge_id") != challenge_id or event.get("kind") not in {"NEW", "UPDATED"}:
                     continue
                 expires = float(event.get("expires_at") or 0)
+                try:
+                    created = datetime.fromisoformat(str(event.get('time') or '').replace('Z', '+00:00'))
+                    if created.tzinfo is None:
+                        return None
+                    expires = min(expires, created.timestamp() + BADGE_TTL)
+                except (ValueError, OverflowError):
+                    return None
                 return (str(event["kind"]), expires) if expires > now else None
         return None
 
@@ -1084,8 +1095,6 @@ class Monitor:
                         break
                     output.write(chunk)
                     received += len(chunk)
-                    if received > MAX_DOWNLOAD_BYTES:
-                        raise OSError("download exceeds max_download_bytes")
                     progress = self.format_bytes(received) + (f"/{self.format_bytes(total)}" if total else "")
                     self.state.update_job(job, percent=min(99, int(received * 100 / total)) if total else 0, progress=progress)
                     if TEST_MODE:
@@ -1104,7 +1113,7 @@ class Monitor:
             if self.stop.is_set():
                 raise DownloadCancelled("download cancelled")
             temporary.replace(destination)
-            archive = AUTO_EXTRACT and (zipfile.is_zipfile(destination) or tarfile.is_tarfile(destination))
+            archive = (zipfile.is_zipfile(destination) or tarfile.is_tarfile(destination))
             with self.manifest_lock:
                 previous = self.manifest.get(manifest_key)
                 previous_extraction = previous.get("extraction") if isinstance(previous, dict) else None
@@ -1169,7 +1178,7 @@ class Monitor:
                 previous = entry.get('extraction')
                 entry['extraction'] = {'status': 'pending', 'paths': previous.get('paths', []) if isinstance(previous, dict) else []}
                 atomic_json(MANIFEST_FILE, self.manifest)
-            extract(archive, payload, MAX_DOWNLOAD_BYTES, self.stop.is_set)
+            extract(archive, payload, cancelled=self.stop.is_set)
             paths: list[str] = []
             deploy_root = deploy_dir.resolve()
             sources = [source for source in sorted(payload.rglob("*")) if source.is_file()]
@@ -1250,21 +1259,24 @@ class Monitor:
             shutil.rmtree(transaction, ignore_errors=True)
 
     def fetch_team(self) -> dict[str, object]:
-        if ACCOUNT_MODE != "auto":
-            try:
-                data = self.client.request_json(f"/api/v1/{ACCOUNT_MODE}/me").get("data")
-                return data if isinstance(data, dict) else {}
-            except ApiError:
-                return {}
+        global ACCOUNT_MODE
         try:
-            data = self.client.request_json("/api/v1/teams/me").get("data")
-            return data if isinstance(data, dict) else {}
-        except ApiError:
-            try:
-                data = self.client.request_json("/api/v1/users/me").get("data")
-                return data if isinstance(data, dict) else {}
-            except ApiError:
+            user = self.client.request_json("/api/v1/users/me").get("data")
+            if not isinstance(user, dict):
                 return {}
+            if user.get("team_id") or "team_id" not in user:
+                try:
+                    team = self.client.request_json("/api/v1/teams/me").get("data")
+                    if isinstance(team, dict) and team.get("id"):
+                        ACCOUNT_MODE = "teams"
+                        return team
+                except ApiError:
+                    if user.get("team_id"):
+                        return {}
+            ACCOUNT_MODE = "users"
+            return user
+        except ApiError:
+            return {}
 
     def fetch_scoreboard(self) -> list[dict[str, object]]:
         try:
@@ -1355,6 +1367,8 @@ class Monitor:
             self.state.contest_end_known = True
 
     def fetch_team_solves(self) -> dict[int, dict[str, object]]:
+        if ACCOUNT_MODE == "auto":
+            self.fetch_team()
         try:
             routes = (f"/api/v1/{ACCOUNT_MODE}/me/solves",) if ACCOUNT_MODE != "auto" else ("/api/v1/teams/me/solves", "/api/v1/users/me/solves")
             data = self.client.request_json_routes(routes).get("data")
@@ -1504,7 +1518,7 @@ class Monitor:
                     known_file = isinstance(self.manifest.get(manifest_key), dict)
                 if not self.local_file_is_current(number, file_info, destination):
                     self.schedule_file(challenge, file_info, deploy_dir, known_file or destination.is_file())
-                elif AUTO_EXTRACT and (zipfile.is_zipfile(destination) or tarfile.is_tarfile(destination)) and not self.extraction_is_current(number, file_info, deploy_dir):
+                elif (zipfile.is_zipfile(destination) or tarfile.is_tarfile(destination)) and not self.extraction_is_current(number, file_info, deploy_dir):
                     self.schedule_extract(challenge, file_info, deploy_dir)
         team = current.get("team") if isinstance(current.get("team"), dict) else {}
         scoreboard = self.fetch_scoreboard()
@@ -1587,8 +1601,7 @@ def marker_badge(challenge: dict[str, object]) -> tuple[str, str] | None:
     remaining = max(0, int(math.ceil(expires - time.time())))
     if not kind or remaining <= 0:
         return None
-    minutes, seconds = divmod(remaining, 60)
-    return f"{kind} {minutes:02d}:{seconds:02d}", CYAN if kind == "NEW" else YELLOW
+    return str(kind), CYAN if kind == "NEW" else YELLOW
 
 
 def problem_line(challenge: dict[str, object], width: int) -> str:
@@ -1713,6 +1726,10 @@ def comparison_delta_cell(value: float, width: int = 5) -> str:
     return f"{value:+{width}.2f}"
 
 
+def own_team_cell(text: str) -> str:
+    return OWN_TEAM_BG + text.replace(RESET, RESET + OWN_TEAM_BG) + RESET
+
+
 def render_team_comparison(view: dict[str, object], width: int) -> list[str]:
     rows = [row for row in view.get('scoreboard', []) if isinstance(row, dict)]
     own = Monitor.scoreboard_team(rows, {'id': view.get('account_id'), 'name': view.get('team_name')})
@@ -1732,15 +1749,18 @@ def render_team_comparison(view: dict[str, object], width: int) -> list[str]:
     )
     # Preserve the original comparison layout; only the data sources vary.
     arenas = []
-    if KOTH_SOURCES:
+    active_koth = {str(key) for key in view.get('koth', {})}
+    active_koth.update(str(c.get('id', key)) for key, c in view.get('challenges', {}).items() if is_koth_challenge(c))
+    if active_koth:
         names = {str(c.get('id', key)): str(c.get('name') or key) for key, c in view.get('challenges', {}).items() if isinstance(c, dict)}
-        for key in sorted(KOTH_SOURCES, key=int):
+        for key in sorted(active_koth, key=int):
             name = names.get(key) or str(view.get('koth', {}).get(key, {}).get('name') or key)
             arenas.append((key, name, name if display_width(name) <= 10 else f'K{key}'))
-    elif KOTH_ENABLED:
-        arenas = [(None, name, label) for name, label in (
-            ('King of the Brick-Breaker', 'BRK'), ('Neural Dominion', 'NEU'),
-            ('SHIFT', 'SHF'), ('BATTLE', 'BAT'))]
+    else:
+        details = {name for row in rows if isinstance(row.get('koth_score_detail'), dict)
+                   for name in row['koth_score_detail']}
+        labels = {'King of the Brick-Breaker': 'BRK', 'Neural Dominion': 'NEU', 'SHIFT': 'SHF', 'BATTLE': 'BAT'}
+        arenas = [(None, name, labels.get(name, name[:10])) for name in sorted(details)]
     cell_width = max([5, *(display_width(label) for _, _, label in arenas)]) + (1 if KOTH_SOURCES else 0)
 
     def arena_points(row, key, name):
@@ -1769,7 +1789,7 @@ def render_team_comparison(view: dict[str, object], width: int) -> list[str]:
         for key, name, _ in arenas:
             theirs, ours = arena_points(row, key, name), arena_points(own, key, name)
             line += comparison_delta_cell(theirs - ours, cell_width) if theirs is not None and ours is not None else paint(f"{'?':^{cell_width}}", YELLOW)
-        left_lines.append(line)
+        left_lines.append(own_team_cell(line) if row is own else line)
 
     own_ids = own.get('solved_challenge_ids')
     own_solved = {int(value) for value in own_ids if str(value).isdigit()} if isinstance(own_ids, list) else {
@@ -1795,12 +1815,12 @@ def render_team_comparison(view: dict[str, object], width: int) -> list[str]:
     if name_width < display_width(heading):
         right_lines.append(heading)
         heading = 'CHALLENGE'
-    right_lines.extend([pad(truncate(heading, name_width), name_width) + ''.join(f'{header:^5}' for header in headers), paint('─' * right_width, GRAY)])
+    right_lines.extend([pad(truncate(heading, name_width), name_width) + ''.join(own_team_cell(f'{header:^5}') if header == 'US' else f'{header:^5}' for header in headers), paint('─' * right_width, GRAY)])
     for number, name in visible:
         cells = []
         for row in displayed:
             if row is own:
-                cells.append(f"{'✓' if number in own_solved else '':^5}")
+                cells.append(own_team_cell(f"{'✓' if number in own_solved else '':^5}"))
             else:
                 ids = solved_by_opponent[next(index for index, opponent in enumerate(opponents) if opponent is row)]
                 cells.append(comparison_status_cell(number in own_solved, number in ids) if ids is not None else paint(f"{'?':^5}", YELLOW))
@@ -1902,13 +1922,14 @@ def resource_series(resources: dict[str, object], value_index: int, width: int) 
     bucket_seconds = RESOURCE_HISTORY_SECONDS / width
     graph_end = math.floor(now / bucket_seconds) * bucket_seconds
     start = graph_end - RESOURCE_HISTORY_SECONDS
+    cutoff = now - RESOURCE_RETENTION_SECONDS
     for sample in resources.get("samples", []):
         if not isinstance(sample, (tuple, list)) or len(sample) <= value_index:
             continue
         moment = float(sample[0])
         # Only render completed buckets. Samples in the active bucket used to
         # be clamped into the last cell, making that cell move every second.
-        if moment < start or moment >= graph_end:
+        if moment < max(start, cutoff) or moment >= graph_end:
             continue
         index = int((moment - start) / bucket_seconds)
         if not 0 <= index < width:
@@ -1934,10 +1955,12 @@ def resource_chart(title: str, current: float, peak: float | None, values: list[
                 cells.append(" ")
                 continue
             units = round(max(0.0, min(100.0, value)) * height * 8 / 100)
+            if value > 0:
+                units = max(1, units)
             cells.append(PARTIAL_BLOCKS[max(0, min(8, units - row_base))])
         threshold = 100 - row * 20
         lines.append(f"{threshold:>3}% ┤" + paint("".join(cells), color))
-    lines.append("  0% ┼" + "─" * plot_width)
+    lines.append("  0% └" + "▔" * plot_width)
     left_label, right_label = "2m ago", "now"
     lines.append("      " + left_label + " " * max(1, plot_width - len(left_label) - len(right_label)) + right_label)
     return [pad(truncate(line, width), width) for line in lines]
@@ -1991,7 +2014,7 @@ def render_resources(resources: dict[str, object], width: int, codex_usage: dict
     left = resource_chart("CPU", cpu, max((v for v in cpu_values if v is not None), default=None), cpu_values, left_width, YELLOW, f"{cpu_cores} CORES")
     right = resource_chart("MEMORY", memory, max((v for v in memory_values if v is not None), default=None), memory_values, right_width, CYAN, f"{used_gib:.2f} / {total_gib:.2f} GiB")
     chart_lines = [left[index] + " " * gap + right[index] for index in range(len(left))]
-    return boxed("SYSTEM RESOURCES", ([codex_usage_line(codex_usage or {}, width - 4), ""] if CODEX_ENABLED else []) + chart_lines, width, YELLOW)
+    return boxed("SYSTEM RESOURCES", ([codex_usage_line(codex_usage or {}, width - 4), ""] if (codex_usage or {}).get("status") in {"WAITING", "LIVE", "ERROR"} else []) + chart_lines, width, YELLOW)
 
 
 def render_resources_compact(resources: dict[str, object], width: int, codex_usage: dict[str, object] | None = None) -> list[str]:
@@ -2001,7 +2024,7 @@ def render_resources_compact(resources: dict[str, object], width: int, codex_usa
         values = resource_series(resources, index, max(1, width - 4 - display_width(prefix)))
         graph = ''.join('·' if value is None else PARTIAL_BLOCKS[max(1, min(8, round(value * 8 / 100)))] for value in values)
         lines.append(prefix + paint(graph, color))
-    return boxed("SYSTEM RESOURCES · 2m", ([codex_usage_line(codex_usage or {}, width - 4)] if CODEX_ENABLED else []) + lines, width, YELLOW)
+    return boxed("SYSTEM RESOURCES · 2m", ([codex_usage_line(codex_usage or {}, width - 4)] if (codex_usage or {}).get("status") in {"WAITING", "LIVE", "ERROR"} else []) + lines, width, YELLOW)
 
 
 def render_koth_compact(view: dict[str, object], width: int) -> list[str]:
@@ -2018,7 +2041,7 @@ def render_screen(view: dict[str, object], resources: dict[str, object] | None =
     left_width = (width - 2) // 2
     right_width = width - 2 - left_width
     status_color = GREEN if view['status'] == 'LIVE' else YELLOW if view['status'] == 'PRE-START' else RED
-    challenges = {key: challenge for key, challenge in view["challenges"].items() if not KOTH_ENABLED or not is_koth_challenge(challenge)}
+    challenges = {key: challenge for key, challenge in view["challenges"].items() if not is_koth_challenge(challenge)}
     solved = sum(bool(challenge.get("solved")) for challenge in challenges.values())
     try:
         score_text = f"{float(view['score']):.2f}"
@@ -2033,7 +2056,7 @@ def render_screen(view: dict[str, object], resources: dict[str, object] | None =
     def assemble(*, event_limit: int = 4, include_events: bool = True) -> list[str]:
         resource_lines = render_resources(resources, width, view.get("codex_usage"))
         event_lines = render_events(view, width, limit=event_limit) if include_events else []
-        koth_lines = render_koth(view, width) if KOTH_ENABLED else []
+        koth_lines = render_koth(view, width) if view.get("koth") else []
         return header + resource_lines + render_challenges(view, left_width, right_width) + koth_lines + transfers + event_lines + comparison
 
     lines = assemble()
@@ -2046,7 +2069,7 @@ def render_screen(view: dict[str, object], resources: dict[str, object] | None =
         # silently remove CPU/RAM history or push all comparison rows offscreen.
         resource_lines = (render_resources if height >= 30 else render_resources_compact)(resources, width, view.get('codex_usage'))
         remaining = max(0, height - len(header) - len(resource_lines))
-        koth_lines = render_koth(view, width) if KOTH_ENABLED else []
+        koth_lines = render_koth(view, width) if view.get("koth") else []
         koth_budget = len(koth_lines) if remaining >= min(10, len(comparison)) + len(koth_lines) else 0
         transfer_budget = min(len(transfers), 5) if remaining - koth_budget >= min(10, len(comparison)) + 3 else 0
         comparison_budget = min(len(comparison), remaining - koth_budget - transfer_budget)
@@ -2202,8 +2225,8 @@ def headless_main() -> int:
 
 def configure(path: Path | None) -> None:
     global BASE_URL, USERNAME, PASSWORD, TOKEN, TITLE, BASE_DIR, STATE_DIR
-    global KOTH_ENABLED, KOTH_SOURCES, CODEX_ENABLED, HELPER_FILES, AGENTS_TEMPLATE, POLL_INTERVAL, MAX_WORKERS
-    global AUTO_EXTRACT, MAX_DOWNLOAD_BYTES, CONTEST_END, ACCOUNT_MODE
+    global KOTH_SOURCES, HELPER_FILES, AGENTS_TEMPLATE, POLL_INTERVAL, MAX_WORKERS
+    global CONTEST_END, ACCOUNT_MODE
     config = load_profile(path)
     anchor = path.resolve().parent if path else Path.cwd()
     def local(value):
@@ -2214,7 +2237,7 @@ def configure(path: Path | None) -> None:
     if parsed.scheme not in {'http', 'https'} or not parsed.netloc or parsed.username or parsed.query or parsed.fragment:
         raise ValueError('Set a valid http(s) URL in the profile or CTFD_MONITOR_URL')
     TITLE = config.get('name', 'CTFd Monitor')
-    ACCOUNT_MODE = config.get('account_mode', 'auto')
+    ACCOUNT_MODE = 'auto'
     USERNAME = os.environ.get(config.get('username_env', 'CTFD_MONITOR_USER'), '')
     PASSWORD = os.environ.get(config.get('password_env', 'CTFD_MONITOR_PASSWORD'), '')
     TOKEN = os.environ.get(config.get('token_env', 'CTFD_MONITOR_TOKEN'), '')
@@ -2232,27 +2255,13 @@ def configure(path: Path | None) -> None:
     MAX_WORKERS = int(config.get('max_workers', 4))
     if not math.isfinite(POLL_INTERVAL) or POLL_INTERVAL <= 0 or MAX_WORKERS < 1:
         raise ValueError('poll_interval and max_workers must be positive')
-    for key in ('koth', 'codex_usage'):
-        if key in config and not isinstance(config[key], bool):
-            raise ValueError(f'{key} must be boolean')
-    AUTO_EXTRACT = config.get('auto_extract', False)
-    if not isinstance(AUTO_EXTRACT, bool):
-        raise ValueError('auto_extract must be boolean')
-    MAX_DOWNLOAD_BYTES = int(config.get('max_download_bytes', 2 * 1024**3))
-    if MAX_DOWNLOAD_BYTES < 1:
-        raise ValueError('max_download_bytes must be positive')
     CONTEST_END = config.get('contest_end', '')
     if CONTEST_END:
         parsed_end = datetime.fromisoformat(CONTEST_END.replace('Z', '+00:00'))
         if parsed_end.tzinfo is None:
             raise ValueError('contest_end requires a timezone')
     KOTH_SOURCES = {str(source['challenge_id']): source for source in config.get('koth_sources', [])}
-    KOTH_ENABLED = config.get('koth', False) or bool(KOTH_SOURCES)
-    CODEX_ENABLED = config.get('codex_usage', False)
-    helpers = config.get('helpers', list(REQUIRED_HELPERS))
-    if not isinstance(helpers, list) or any(not isinstance(x, str) or Path(x).name != x for x in helpers):
-        raise ValueError('helpers must be a list of file names')
-    HELPER_FILES = tuple(helpers)
+    HELPER_FILES = REQUIRED_HELPERS
     AGENTS_TEMPLATE = local(config['agents_template']) if config.get('agents_template') else None
     if AGENTS_TEMPLATE and not AGENTS_TEMPLATE.is_file():
         raise ValueError('agents_template does not exist')

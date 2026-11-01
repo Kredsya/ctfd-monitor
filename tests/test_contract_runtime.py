@@ -51,9 +51,14 @@ class RuntimeContracts(Scenario):
         self.assertEqual(self.monitor.state.status,'LIVE')
         self.assertEqual(self.monitor.state.challenges,{})
 
-    def test_disabled_optional_integrations_do_not_start_external_processes(self):
-        with patch.object(m,'KOTH_ENABLED',False),patch.object(m,'CODEX_ENABLED',False),patch.object(m.subprocess,'Popen',side_effect=AssertionError('External process started')):
-            self.monitor.run_koth(); self.monitor.run_codex_usage()
+    def test_absent_integrations_remain_idle_and_keep_checking(self):
+        with patch.object(m.shutil,'which',return_value=None),patch.object(m.subprocess,'Popen',side_effect=AssertionError('External process started')):
+            self.monitor.stop=ControlledStop(self.monitor,[])
+            self.monitor.run_koth()
+            self.monitor.stop=ControlledStop(self.monitor,[])
+            self.monitor.run_codex_usage()
+            self.assertEqual(self.monitor.state.codex_usage['status'],'ABSENT')
+            self.assertEqual(len(self.monitor.stop.observed),1)
 
     def test_render_size_unicode_and_panel_matrix(self):
         self.monitor.state.challenges={'1':self.challenge(name='한글 🧪 e\u0301'*20)}

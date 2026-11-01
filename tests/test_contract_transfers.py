@@ -38,10 +38,12 @@ class TransferContracts(Scenario):
         self.assertFalse(list(deploy.glob('.*ctfd-part*')))
         self.assertEqual(self.monitor.state.jobs[-1].state,'ERROR')
 
-    def test_download_size_limit_keeps_previous_file(self):
+    def test_legacy_download_size_limit_no_longer_stops_downloads(self):
+        self.profile.write_text(self.profile.read_text()+'\nmax_download_bytes = 3\n')
+        m.configure(self.profile)
         _,_,deploy=self.download(b'old')
-        with patch.object(m,'MAX_DOWNLOAD_BYTES',3): self.download(b'oversize')
-        self.assertEqual((deploy/'file.bin').read_bytes(),b'old')
+        self.download(b'larger than retired limit')
+        self.assertEqual((deploy/'file.bin').read_bytes(),b'larger than retired limit')
         self.assertFalse(list(deploy.glob('.*ctfd-part*')))
 
     def test_cancellation_keeps_previous_file_and_removes_partial(self):
@@ -78,10 +80,9 @@ class TransferContracts(Scenario):
         self.assertEqual((deploy/'a').read_bytes(),b'payload')
 
     def test_archive_update_removes_stale_file_and_preserves_unrelated_work(self):
-        with patch.object(m,'AUTO_EXTRACT',True):
-            _,file,deploy=self.download(zip_bytes([('nested/a',b'old'),('stale',b'obsolete')]),'data.zip')
-            (deploy/'solution.py').write_text('keep')
-            self.download(zip_bytes([('nested/a',b'new')]),'data.zip')
+        _,file,deploy=self.download(zip_bytes([('nested/a',b'old'),('stale',b'obsolete')]),'data.zip')
+        (deploy/'solution.py').write_text('keep')
+        self.download(zip_bytes([('nested/a',b'new')]),'data.zip')
         self.assertEqual((deploy/'nested/a').read_bytes(),b'new')
         self.assertFalse((deploy/'stale').exists())
         self.assertEqual((deploy/'solution.py').read_text(),'keep')
@@ -89,23 +90,21 @@ class TransferContracts(Scenario):
         self.assertFalse(list(m.STAGING_DIR.iterdir()))
 
     def test_failed_extraction_does_not_publish_partial_files(self):
-        with patch.object(m,'AUTO_EXTRACT',True):
-            _,_,deploy=self.download(zip_bytes([('a',b'valid'),('../escape',b'bad')]),'bad.zip')
+        _,_,deploy=self.download(zip_bytes([('a',b'valid'),('../escape',b'bad')]),'bad.zip')
         self.assertFalse((deploy/'a').exists())
         self.assertFalse((deploy.parent/'escape').exists())
         self.assertNotEqual(self.monitor.manifest['1/bad.zip']['extraction']['status'],'complete')
 
     def test_archive_must_not_overwrite_itself(self):
         body=zip_bytes([('data.zip',b'destroy archive')])
-        with patch.object(m,'AUTO_EXTRACT',True): _,_,deploy=self.download(body,'data.zip')
+        _,_,deploy=self.download(body,'data.zip')
         self.assertEqual((deploy/'data.zip').read_bytes(),body)
 
     def test_extraction_symlink_escape_is_reported_not_marked_complete(self):
         deploy=self.monitor.prepare_challenge(self.challenge())
         outside=self.root/'outside'; outside.mkdir()
         (deploy/'link').symlink_to(outside,target_is_directory=True)
-        with patch.object(m,'AUTO_EXTRACT',True):
-            self.download(zip_bytes([('link/payload',b'bad')]),'data.zip')
+        self.download(zip_bytes([('link/payload',b'bad')]),'data.zip')
         self.assertFalse((outside/'payload').exists())
         self.assertNotEqual(self.monitor.manifest['1/data.zip']['extraction']['status'],'complete')
 

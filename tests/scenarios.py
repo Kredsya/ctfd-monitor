@@ -53,9 +53,8 @@ class Scenario(unittest.TestCase):
         self.addCleanup(finish)
         self.url = f'http://127.0.0.1:{self.server.server_port}'
         self.profile = self.root / 'competition.toml'
-        # Explicitly disable helpers ONLY for independent network/storage tests.
-        # Default/helper contracts are tested separately without this override.
-        self.profile.write_text(f'url="{self.url}"\nroot="work"\nhelpers=[]\n')
+        # Every scenario now provisions the required helpers, like the product.
+        self.profile.write_text(f'url="{self.url}"\nroot="work"\n')
         os.environ['CTFD_MONITOR_TOKEN'] = 'fixture-token'
         m.configure(self.profile)
         self.ok('/api/v1/users/me', {'id': 7, 'name': 'Player'})

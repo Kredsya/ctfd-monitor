@@ -17,7 +17,7 @@ class Tests(unittest.TestCase):
             p.write_text('url="https://one.example"\n')
             m.configure(p)
             first = m.STATE_DIR
-            self.assertFalse(m.KOTH_ENABLED)
+            self.assertEqual(m.KOTH_SOURCES,{})
             p.write_text('url="https://two.example"\n')
             m.configure(p)
             self.assertNotEqual(first, m.STATE_DIR)

@@ -1,6 +1,6 @@
 # 전체 회귀 검증 기준
 
-감사 기준 구현: v0.2.0 (`3246754`), 현재 제품: v0.3.2. 감사에서 드러낸 계약을 유지하며 제품을 수정한다. 실패를 expectedFailure/skip으로 숨기지 않으며 통과 개수와 제품 완성도를 동일시하지 않는다. 수정 전 실패 목록은 [BASELINE.md](BASELINE.md)에 보존한다.
+감사 기준 구현: v0.2.0 (`3246754`), 현재 제품: v0.3.3. 감사에서 드러낸 계약을 유지하며 제품을 수정한다. 실패를 expectedFailure/skip으로 숨기지 않으며 통과 개수와 제품 완성도를 동일시하지 않는다. 수정 전 실패 목록은 [BASELINE.md](BASELINE.md)에 보존한다.
 
 ## 판정 근거
 
@@ -23,14 +23,14 @@
 | 실제 CTFd | 공식 3.8.9 고정 이미지에서 토큰/비밀번호, 문제 목록/상세, 개인 풀이, 팀 정보/팀 풀이 | stock_ctfd_smoke.py (별도 CI job) |
 | 문제 생명주기 | 신규·동일·설명 변경·풀이·삭제·재시작, 한글/이모지/동명/이름 변경, signed URL 갱신, 계정만 바뀐 빈 대회 | test_contract_lifecycle |
 | 다운로드 | 실제 HTTP 바이트·해시·manifest·재시작, 원본 변경과 로컬 수정 백업, 짧은 응답, 크기 초과, 시작 전·전송 중 취소, 실제 SIGKILL 후 재시작, replace 실패, 중복 예약 | test_contract_transfers |
-| 압축 | ZIP/TAR 정상, 경로 이탈·절대 경로·중복·symlink·hardlink·device·FIFO, 합계 크기·10000개 경계, 취소·손상 | test_contract_archives, test_archives |
+| 압축 | ZIP/TAR 정상, 경로 이탈·절대 경로·중복·symlink·hardlink·device·FIFO, 추출 함수의 선택적 한도·10000개 경계, 취소·손상 | test_contract_archives, test_archives |
 | 압축 반영 | 새 버전·stale 정리·풀이 보존·부분 반영 차단·자기 archive 덮어쓰기·대상 symlink·staging 정리 | test_contract_transfers |
 | 복구·동시성 | 손상 state/manifest, 부분 다운로드 청소, 풀이 파일 보존, 잠금 재획득, 이벤트 중복 방지 | test_contract_lifecycle, test_storage, test_integration |
 | polling | 서버 장애→STALE→회복, backoff, 401 재인증, 대회 종료 시 마지막 정보, 빈 대회 | test_contract_runtime |
 | 표시·종료 | 1×1/40×10/80×24/120×60/200×80, 한글·결합문자·이모지, countdown의 잘못된 시간대, 표준 점수판 차이, active/done/error 전송, 사건·badge 만료, 자원 graph 경계, terminal clipboard escape, PTY Ctrl-C, headless SIGTERM | test_contract_runtime, test_installer, test_integration |
 | 보조 스크립트 실행 | 격리된 실제 tmux에서 4/10 pane, 실제 PTY F2/F3 전환·focus 복원, AGENTS/deploy 복사, 재접속 시 작업 보존 | test_contract_helpers_runtime |
 | UI 보존 | Codex 활성 프로필의 일반·작은 화면, WAITING/UNAVAILABLE/STALE/크레딧, 분야 간격, KOTH 열 정렬, CPU·메모리 순간 최대값·만료와 막대/Peak 일치 | test_ui_preservation |
-| 선택 통합 | 비활성 시 subprocess 금지, 미지원 KOTH, 4종 adapter의 점수/순위/페이지/라운드 fixture, Codex 바이너리 없음/응답 파싱/자식 종료 | test_contract_optional |
+| 선택 통합 | 미설치 시 subprocess 금지, 미지원 KOTH, 4종 adapter의 점수/순위/페이지/라운드 fixture, Codex 바이너리 없음/응답 파싱/자식 종료 | test_contract_optional |
 | v0.3 제품 경계 | 각 자산 누락·빈 파일·권한 오류 시 설정 보존, 사용자 지침·스크립트 우선순위, 저장 함수 실제 도달, 전체 압축 경로 선검사, 재시작 STALE, 일반 403, probe 실패 종료, 기본 화면의 ACDC 지표 제외, 출력 폭·제어문자 | test_v030, test_contract_setup |
 
 ## 기준 스크립트
@@ -40,7 +40,7 @@
 - 22.sh SHA-256: `a5b7623c614e45e13038d7d54f9dc94fec1d4e797ce1a7ef7a88116a8983b0f1`
 - 25.sh SHA-256: `88aab2ef97e6b5ac3b3e2f8c81aa58e71bfefab2a3126aa96b73a48e79b93f7d`
 
-스토리지·HTTP 단독 테스트는 `helpers=[]`를 명시해 검사 대상을 격리한다. 기본 설정·설치·배포·신규 문제 계약 테스트에는 이 우회를 적용하지 않는다. 스크립트의 마지막 attach는 wrapper로 반환하고, 이후 별도 실제 PTY client를 연결해 F2/F3 키를 보낸다. tmux server/pane 생성과 모드 변화는 실제로 검사한다. `TMUX_TMPDIR`를 격리해 사용자의 tmux 서버에 접근하지 않는다.
+스토리지·HTTP 테스트도 제품과 동일하게 두 필수 보조 스크립트를 준비합니다. 스크립트의 마지막 attach는 wrapper로 반환하고, 이후 별도 실제 PTY client를 연결해 F2/F3 키를 보낸다. tmux server/pane 생성과 모드 변화는 실제로 검사한다. `TMUX_TMPDIR`를 격리해 사용자의 tmux 서버에 접근하지 않는다.
 
 ## 실행과 증거
 
@@ -81,3 +81,7 @@ PYTHONPATH=src python3 tests/stock_ctfd_smoke.py  # Docker 필요
 - test_lab: 경기 점수와 공동 순위, 명시적 KOTH 소스·인증 격리, 공식 기간 오류·비밀번호 로그인, 포트 충돌, Award 동기화 실패와 재시도.
 - lab-smoke CI: 별도 데이터 폴더의 실제 CTFd와 두 모니터를 실행해 문제·첨부·풀이·KOTH·장애·토큰 교체·재시작·초기화를 검사한다. 기존 사용자 lab 데이터는 사용하지 않는다.
 - sdist에 lab 실행기·컨테이너 제어 코드·문서·기간 응답 fixture가 포함되고 lab 인증·DB가 제외되는지 검사한다.
+
+## v0.3.3 추가 검증
+
+- test_v033: 실행 중 KOTH 추가/삭제, Codex 미설치/로그인 실패/복구/제거, 팀·개인 전환, 폐기한 스위치와 바이트 한도 무효화, 자동 압축 해제·필수 helper, 120초 샘플 만료, 60초 배지와 시간 표시 제거, 0% 기준선, 우리 팀 배경.

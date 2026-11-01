@@ -83,7 +83,6 @@ def setup(root: Path) -> None:
     user, status = verify(client)
     print(status)
     validate_checkout(root)
-    account_mode = 'teams' if user.get('team_id') else 'users'
     identity = hashlib.sha256(f"{url}:{user['id']}".encode()).hexdigest()[:12]
     local = root / '.ctfd-monitor-local'
     if local.is_symlink():
@@ -96,13 +95,9 @@ def setup(root: Path) -> None:
         'name': urllib.parse.urlsplit(url).netloc,
         'url': url,
         'root': f'../workspace/{identity}',
-        'account_mode': account_mode,
         'credentials_file': secret.name,
         'poll_interval': 5.0,
         'max_workers': 4,
-        'auto_extract': False,
-        'koth': False,
-        'codex_usage': False,
     }
     def toml_value(value):
         return json.dumps(value, ensure_ascii=False)

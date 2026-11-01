@@ -42,7 +42,7 @@ class ComparisonTests(Scenario):
         for row in view['scoreboard']:
             row['koth_score_detail']={name:0 for name in ('King of the Brick-Breaker','Neural Dominion','SHIFT','BATTLE')}
         view['scoreboard'][0]['koth_score_detail']['SHIFT']=50
-        with patch.object(m,'KOTH_ENABLED',True),patch.object(m,'KOTH_SOURCES',{}):
+        with patch.object(m,'KOTH_SOURCES',{}):
             plain=m.ANSI_RE.sub('','\n'.join(m.render_team_comparison(view,140)))
         for text in ('BRK','NEU','SHF','BAT','+50','JEOPARDY CHALLENGE'):
             self.assertIn(text,plain)

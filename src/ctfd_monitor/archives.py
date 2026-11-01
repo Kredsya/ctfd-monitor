@@ -6,7 +6,7 @@ import tarfile
 import zipfile
 
 
-def extract(archive: Path, target: Path, max_bytes: int, cancelled=lambda: False) -> None:
+def extract(archive: Path, target: Path, max_bytes: int | None = None, cancelled=lambda: False) -> None:
     root = target.resolve()
     used = 0
     count = 0
@@ -17,7 +17,7 @@ def extract(archive: Path, target: Path, max_bytes: int, cancelled=lambda: False
         destination = (root / name).resolve()
         if not destination.is_relative_to(root) or destination == root:
             raise ValueError('archive path escapes extraction directory')
-        if count > 10000 or size < 0 or used + size > max_bytes:
+        if count > 10000 or size < 0 or (max_bytes is not None and used + size > max_bytes):
             raise ValueError('archive exceeds extraction limits')
         destination.parent.mkdir(parents=True, exist_ok=True)
         with destination.open('xb') as output:
@@ -25,7 +25,7 @@ def extract(archive: Path, target: Path, max_bytes: int, cancelled=lambda: False
                 if cancelled():
                     raise RuntimeError('extraction cancelled')
                 used += len(chunk)
-                if used > max_bytes:
+                if max_bytes is not None and used > max_bytes:
                     raise ValueError('archive exceeds extraction limits')
                 output.write(chunk)
 

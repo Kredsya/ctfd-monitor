@@ -25,8 +25,7 @@ class WorkspaceReleaseContracts(Scenario):
         self.assertTrue((deploy.parent/'README.md').is_file())
 
     def test_failed_reextraction_replaces_previous_complete_status(self):
-        with patch.object(m,'AUTO_EXTRACT',True):
-            challenge,file,deploy=self.download(zip_bytes([('data',b'original')]),'data.zip')
+        challenge,file,deploy=self.download(zip_bytes([('data',b'original')]),'data.zip')
         self.assertEqual(self.monitor.manifest['1/data.zip']['extraction']['status'],'complete')
         (deploy/'data.zip').write_bytes(zip_bytes([('../escape',b'invalid')]))
         self.monitor.apply_extraction(challenge,file,deploy/'data.zip',deploy)
@@ -75,8 +74,7 @@ class WorkspaceReleaseContracts(Scenario):
                 (deploy/'link').unlink(missing_ok=True)
                 (deploy/'link').symlink_to(outside)
                 (deploy/'directory').mkdir(exist_ok=True)
-                with patch.object(m,'AUTO_EXTRACT',True):
-                    self.download(zip_bytes([('aaa-valid',b'must not publish'),(name,b'invalid')]),'data.zip')
+                self.download(zip_bytes([('aaa-valid',b'must not publish'),(name,b'invalid')]),'data.zip')
                 self.assertFalse((deploy/'aaa-valid').exists())
                 self.assertEqual(self.monitor.state.jobs[-1].state,'ERROR')
 
