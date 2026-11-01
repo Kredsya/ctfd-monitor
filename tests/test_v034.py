@@ -30,9 +30,10 @@ class DisplayAndScoreTests(Scenario):
             self.assertTrue(all('KOTH' not in row for row in rows[1:-1]))
             self.assertNotRegex(rows[1],r'\b230\b')
             self.assertIn('Rank',rows[1])
-            self.assertIn('1235 / 1500 pt',rows[1])
-            for token in ('Rank',' / ',' pt'):
-                self.assertEqual(rows[1].index(token),rows[2].index(token))
+            self.assertIn('1235 / 1500 pt',rows[2])
+            self.assertEqual(rows[1].index('Rank'),rows[4].index('Rank'))
+            for token in (' / ',' pt'):
+                self.assertEqual(rows[2].index(token),rows[5].index(token))
         self.assertEqual(view,original)
 
     def test_closed_challenges_do_not_freeze_official_koth_total(self):

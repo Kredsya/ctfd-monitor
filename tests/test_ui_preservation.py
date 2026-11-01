@@ -169,20 +169,21 @@ class UIPreservationTests(Scenario):
                      (-123.45,999.99,3,8,'ERROR'),(None,None,None,None,'ERROR'),
                      (None,None,None,None,'WAITING')),1)}
         sources={key:{'max_points':20000 if key=='2' else 1500} for key in entries}
-        for width in (109,110,120,180):
+        for width in (53,54,59,69,109,110,120,180):
             with self.subTest(width=width),patch.object(m,'KOTH_SOURCES',sources):
                 lines=m.render_koth({'koth':entries},width)
                 rows=[m.ANSI_RE.sub('',line) for line in lines[1:-1]]
-                self.assertEqual(len(rows),len(entries))
-                for token in ('Rank ', ' / ', ' pt'):
-                    columns=[m.display_width(row[:row.index(token)]) for row in rows]
+                self.assertEqual(len(rows),len(entries)*3-1)
+                names, scores = rows[::3], rows[1::3]
+                for token, group in (('Rank ',names),(' / ',scores),(' pt',scores)):
+                    columns=[m.display_width(row[:row.index(token)]) for row in group]
                     self.assertEqual(len(set(columns)),1,(token,columns))
-                bars=[re.search('[█░]+',row) for row in rows]
+                bars=[re.search('[█░]+',row) for row in scores]
                 self.assertTrue(all(bars))
-                self.assertEqual(len({m.display_width(row[:bar.start()]) for row,bar in zip(rows,bars)}),1)
+                self.assertEqual(len({m.display_width(row[:bar.start()]) for row,bar in zip(scores,bars)}),1)
                 self.assertEqual(len({len(bar[0]) for bar in bars}),1)
-                for row,entry in zip(rows,entries.values()):
-                    self.assertIn(entry['name'],row)
+                for name,row,entry in zip(names,scores,entries.values()):
+                    self.assertIn(entry['name'],name)
                     if entry['points'] is not None:
                         self.assertIn(f"{entry['points']:.0f} /",row)
                 self.assertTrue(all(m.display_width(line)<=width for line in lines))

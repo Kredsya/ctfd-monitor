@@ -116,6 +116,19 @@ class ResourceTimelineTests(unittest.TestCase):
         self.assertEqual(m.resource_series(self.frame(sampler, 239, []), 1, 48), [None] * 48)
         self.assertEqual(m.resource_series(self.frame(self.sampler(), 240, []), 1, 48), [None] * 48)
 
+    def test_cpu_and_memory_scroll_together_at_odd_terminal_widths(self):
+        for width in (109, 110, 111, 119, 120, 121, 139, 140, 219, 220):
+            sampler = self.sampler()
+            samples = [(120 + i, float(i % 97), float(i % 97)) for i in range(121)]
+            for step in range(31):
+                frame = self.frame(sampler, 240 + step * .2, samples)
+                with patch.object(m, 'resource_chart', wraps=m.resource_chart) as chart:
+                    lines = m.render_resources(frame, width)
+                cpu, memory = chart.call_args_list
+                self.assertEqual(cpu.args[3], memory.args[3], (width, step))
+                self.assertEqual(cpu.args[4], memory.args[4], (width, step))
+                self.assertTrue(all(m.display_width(line) == width for line in lines))
+
 
 if __name__ == '__main__':
     unittest.main()

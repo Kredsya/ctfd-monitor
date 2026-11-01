@@ -97,6 +97,7 @@ WHITE = f"{ESC}38;5;255m"
 GREEN_BG = f"{ESC}48;2;35;48;42m"
 RED_BG = f"{ESC}48;2;52;38;41m"
 OWN_TEAM_BG = f"{ESC}48;2;45;65;78m"
+SCREEN_STYLE = f"{ESC}48;2;19;22;27m{ESC}38;2;220;220;220m"
 COMPARISON_GREEN = f"{ESC}38;2;166;191;174m"
 COMPARISON_RED = f"{ESC}38;2;203;173;177m"
 ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
@@ -1654,17 +1655,28 @@ def challenge_lines(challenges: list[dict[str, object]], width: int) -> list[str
 
 def render_challenges(view: dict[str, object], left_width: int, right_width: int, *, max_rows: int | None = None) -> list[str]:
     challenges = [challenge for challenge in view["challenges"].values() if not is_koth_challenge(challenge)]
+    unsolved = [challenge for challenge in challenges if not challenge.get("solved")]
+    solved = [challenge for challenge in challenges if challenge.get("solved")]
     if view["status"] == "PRE-START":
         left = boxed("UNSOLVED  0", ["", paint("Competition has not start.", YELLOW, bold=True), "", ""], left_width, RED)
         right = boxed("SOLVED  0", ["", "", "", ""], right_width, GREEN)
     else:
-        unsolved = [challenge for challenge in challenges if not challenge.get("solved")]
-        solved = [challenge for challenge in challenges if challenge.get("solved")]
         left = boxed(f"UNSOLVED  {len(unsolved)}", challenge_lines(unsolved, left_width - 4), left_width, RED)
         right = boxed(f"SOLVED  {len(solved)}", challenge_lines(solved, right_width - 4), right_width, GREEN)
+    koth_on_left = len(unsolved) < len(solved) and view['status'] != 'PRE-START'
+    koth_width = left_width if koth_on_left else right_width
+    koth = render_koth(view, koth_width) if view.get('koth') else []
     if max_rows is not None:
-        left = fit_panel(left, max_rows, left_width, RED)
-        right = fit_panel(right, max_rows, right_width, GREEN)
+        # Keep each panel's borders and omission notice. Reserve at least
+        # three rows for its challenge panel before fitting the KOTH card.
+        koth_budget = min(len(koth), max(0, max_rows - 3))
+        koth = fit_panel(koth, koth_budget, koth_width, CYAN)
+        left = fit_panel(left, max_rows - (len(koth) if koth_on_left else 0), left_width, RED)
+        right = fit_panel(right, max_rows - (len(koth) if not koth_on_left else 0), right_width, GREEN)
+    if koth_on_left:
+        left += koth
+    else:
+        right += koth
     rows = max(len(left), len(right))
     left += [" " * left_width] * (rows - len(left))
     right += [" " * right_width] * (rows - len(right))
@@ -1701,21 +1713,22 @@ def render_koth(view: dict[str, object], width: int) -> list[str]:
     maximum_width = max([4, *(len(row[3]) for row in formatted)])
     state_width = max([0, *(display_width(row[4]) for row in formatted)])
     content_width = width - 4
-    fixed_width = rank_width + points_width + maximum_width + state_width + 18
-    bar_width = max(0, min(20, content_width - fixed_width - 12))
     for name, rank_text, points_text, maximum_text, state, ratio, status in formatted:
+        if lines:
+            lines.append('')
         rank_label = f"Rank {rank_text:>{rank_width}}"
         points_label = f"{points_text:>{points_width}} / {maximum_text:>{maximum_width}} pt"
+        name_width = content_width - len(rank_label) - state_width - 2
+        if name_width >= 1:
+            lines.append(paint(pad(truncate(name, name_width), name_width), WHITE, bold=True)
+                         + '  ' + paint(rank_label, GRAY) + pad(state, state_width))
+        else:
+            lines.extend([truncate(name, content_width), paint(rank_label, GRAY) + state])
+        bar_width = max(0, content_width - len(points_label) - 2)
         filled = round(bar_width * ratio)
         bar_color = GREEN if status == "LIVE" else YELLOW
         bar = paint("█" * filled, bar_color) + paint("░" * (bar_width - filled), GRAY)
-        right = f"{rank_label}  {bar + '  ' if bar_width else ''}{points_label}{pad(state, state_width)}"
-        name_width = content_width - display_width(right) - 2
-        if name_width >= 8:
-            lines.append(f"{pad(truncate(name, name_width), name_width)}  {right}")
-        else:
-            # Give numeric fields their own rows before shortening any score.
-            lines.extend([truncate(name, content_width), rank_label + state, points_label])
+        lines.append((bar + '  ' if bar_width else '') + points_label)
     if not lines:
         lines = [paint("WAITING", YELLOW, bold=True)]
     title = f"KOTH · {len(entries)} ARENAS · {total:.0f} / {maximum:.0f} pt"
@@ -2052,18 +2065,20 @@ def render_resources(resources: dict[str, object], width: int, codex_usage: dict
     body_width = width - 4
     left_width = (body_width - gap) // 2
     right_width = body_width - gap - left_width
-    plot_width_left = max(8, left_width - 6)
-    plot_width_right = max(8, right_width - 6)
-    cpu_values = resource_series(resources, 1, plot_width_left)
-    memory_values = resource_series(resources, 2, plot_width_right)
+    # An odd terminal width gives one column an extra cell. Use equal plot
+    # widths, hence equal time buckets, and leave the spare cell as padding.
+    chart_width = min(left_width, right_width)
+    plot_width = max(8, chart_width - 6)
+    cpu_values = resource_series(resources, 1, plot_width)
+    memory_values = resource_series(resources, 2, plot_width)
     cpu = float(resources.get("cpu") or 0.0)
     memory = float(resources.get("memory") or 0.0)
     used_gib = float(resources.get("used_gib") or 0.0)
     total_gib = float(resources.get("total_gib") or 0.0)
     cpu_cores = int(resources.get("cpu_cores") or 1)
-    left = resource_chart("CPU", cpu, max((v for v in cpu_values if v is not None), default=None), cpu_values, left_width, YELLOW, f"{cpu_cores} CORES")
-    right = resource_chart("MEMORY", memory, max((v for v in memory_values if v is not None), default=None), memory_values, right_width, CYAN, f"{used_gib:.2f} / {total_gib:.2f} GiB")
-    chart_lines = [left[index] + " " * gap + right[index] for index in range(len(left))]
+    left = resource_chart("CPU", cpu, max((v for v in cpu_values if v is not None), default=None), cpu_values, chart_width, YELLOW, f"{cpu_cores} CORES")
+    right = resource_chart("MEMORY", memory, max((v for v in memory_values if v is not None), default=None), memory_values, chart_width, CYAN, f"{used_gib:.2f} / {total_gib:.2f} GiB")
+    chart_lines = [pad(left[index], left_width) + " " * gap + pad(right[index], right_width) for index in range(len(left))]
     return boxed("SYSTEM RESOURCES", ([codex_usage_line(codex_usage or {}, width - 4), ""] if (codex_usage or {}).get("status") in {"WAITING", "LIVE", "ERROR"} else []) + chart_lines, width, YELLOW)
 
 
@@ -2106,8 +2121,7 @@ def render_screen(view: dict[str, object], resources: dict[str, object] | None =
     def assemble(*, event_limit: int = 4, include_events: bool = True) -> list[str]:
         resource_lines = render_resources(resources, width, view.get("codex_usage"))
         event_lines = render_events(view, width, limit=event_limit) if include_events else []
-        koth_lines = render_koth(view, width) if view.get("koth") else []
-        return header + resource_lines + render_challenges(view, left_width, right_width) + koth_lines + transfers + event_lines + comparison
+        return header + resource_lines + render_challenges(view, left_width, right_width) + transfers + event_lines + comparison
 
     lines = assemble()
     if len(lines) > height:
@@ -2119,18 +2133,22 @@ def render_screen(view: dict[str, object], resources: dict[str, object] | None =
         # silently remove CPU/RAM history or push all comparison rows offscreen.
         resource_lines = (render_resources if height >= 30 else render_resources_compact)(resources, width, view.get('codex_usage'))
         remaining = max(0, height - len(header) - len(resource_lines))
-        koth_lines = render_koth(view, width) if view.get("koth") else []
-        koth_budget = len(koth_lines) if remaining >= min(10, len(comparison)) + len(koth_lines) else 0
-        transfer_budget = min(len(transfers), 5) if remaining - koth_budget >= min(10, len(comparison)) + 3 else 0
-        comparison_budget = min(len(comparison), remaining - koth_budget - transfer_budget)
-        challenge_budget = remaining - koth_budget - transfer_budget - comparison_budget
+        # Reserve enough column height for the complete half-width KOTH card
+        # and a challenge panel, then give the remaining space to comparison.
+        koth_height = len(render_koth(view, min(left_width, right_width))) if view.get('koth') else 0
+        column_minimum = min(len(render_challenges(view, left_width, right_width)), 3 + koth_height)
+        column_budget = min(column_minimum, max(0, remaining - min(10, len(comparison))))
+        transfer_budget = min(len(transfers), 5) if remaining - column_budget >= min(10, len(comparison)) + 3 else 0
+        comparison_budget = min(len(comparison), remaining - column_budget - transfer_budget)
+        challenge_budget = remaining - transfer_budget - comparison_budget
         lines = (header + resource_lines
                  + render_challenges(view, left_width, right_width, max_rows=challenge_budget)
-                 + koth_lines[:koth_budget] + fit_panel(transfers, transfer_budget, width, BLUE)
+                 + fit_panel(transfers, transfer_budget, width, BLUE)
                  + fit_panel(comparison, comparison_budget, width, BLUE))
     if len(lines) > height:
         lines = lines[:height]
-    return "\n".join(truncate(terminal_text(line), max(1, terminal.columns)) for line in lines)
+    screen_width = max(1, min(terminal.columns, 220))
+    return "\n".join(SCREEN_STYLE + pad(truncate(terminal_text(line), screen_width), screen_width).replace(RESET, RESET + SCREEN_STYLE) + RESET for line in lines)
 
 
 def solid_warning_box(message: str, terminal_columns: int) -> list[str]:
