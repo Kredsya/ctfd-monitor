@@ -53,13 +53,13 @@ finally:
         with tarfile.open(archives[-1]) as archive:
             members=archive.getmembers()
             names={'/'.join(m.name.split('/')[1:]):m for m in members}
-            for name in ('install.py','ctfd-monitor.py','22.sh','25.sh'):
+            for name in ('install.py','ctfd-monitor.py','22.sh','25.sh','lab.py','lab/__init__.py','lab/control.py','lab/smoke.py','docs/local-lab.md','tests/fixtures/stock_ctfd_period.json'):
                 with self.subTest(name=name):
                     self.assertIn(name,names)
                     if name.endswith('.sh'):
                         self.assertTrue(names[name].mode & 0o111)
                         self.assertEqual(archive.extractfile(names[name]).read(),(REPO/'tests/fixtures/original'/name).read_bytes())
-            self.assertFalse(any('.ctfd-monitor-local/' in name or name.endswith('.env') for name in names))
+            self.assertFalse(any('.ctfd-monitor-local/' in name or '.ctfd-lab/' in name or name.endswith(('.env','.db')) for name in names))
 
     def test_wheel_contains_runtime_helpers_and_no_local_secrets(self):
         wheels=sorted((REPO/'dist').glob('ctfd_monitor-*.whl'),key=lambda p:p.stat().st_mtime)

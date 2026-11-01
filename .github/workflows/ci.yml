@@ -43,9 +43,26 @@ jobs:
         with:
           python-version: '3.12'
       - run: PYTHONPATH=src python tests/stock_ctfd_smoke.py
+  lab-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Run isolated CTFd lab and both monitor profiles
+        run: python lab.py --scenario smoke --data "$RUNNER_TEMP/ctfd-lab-release" --port 18080 --koth-port 18081
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lab-evidence
+          path: |
+            ${{ runner.temp }}/ctfd-lab-release/*-monitor.log
+            ${{ runner.temp }}/ctfd-lab-release/stock-responses.json
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [test, stock-ctfd]
+    needs: [test, stock-ctfd, lab-smoke]
     runs-on: ubuntu-latest
     permissions:
       contents: write

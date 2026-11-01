@@ -1,0 +1,5 @@
+{
+  "image": "ctfd/ctfd:3.8.9@sha256:84aff1e50b6a6f931b5da90c6f5b7c623ba4583217a9b00e9d4c1b7c53b9739f",
+  "before": {"status": 403, "body": {"message": "Local monitor lab has not started yet"}},
+  "after": {"status": 403, "body": {"message": "Local monitor lab has ended"}}
+}

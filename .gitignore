@@ -15,3 +15,5 @@ competition.local.toml
 .coverage
 htmlcov/
 test-results/
+
+.ctfd-lab/

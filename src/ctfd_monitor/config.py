@@ -10,7 +10,7 @@ INTEGERS = {'max_workers', 'max_download_bytes'}
 
 def load_profile(path: Path | None) -> dict:
     config = tomllib.loads(path.read_text(encoding='utf-8')) if path else {}
-    unknown = set(config) - STRINGS - BOOLEANS - INTEGERS - {'poll_interval', 'helpers'}
+    unknown = set(config) - STRINGS - BOOLEANS - INTEGERS - {'poll_interval', 'helpers', 'koth_sources'}
     if unknown:
         raise ValueError(f"Unknown configuration keys: {', '.join(sorted(unknown))}")
     for key, value in config.items():
@@ -27,6 +27,29 @@ def load_profile(path: Path | None) -> dict:
     for key in ('username_env', 'password_env', 'token_env'):
         if key in config and (not config[key] or '=' in config[key] or '\x00' in config[key]):
             raise ValueError(f'{key} must name an environment variable')
+    sources = config.get('koth_sources', [])
+    if not isinstance(sources, list):
+        raise ValueError('koth_sources must be a list')
+    seen = set()
+    from urllib.parse import urlsplit
+    for source in sources:
+        if not isinstance(source, dict) or set(source) != {'challenge_id', 'adapter', 'url', 'max_points'}:
+            raise ValueError('koth_sources entries require challenge_id, adapter, url, max_points')
+        identifier = source['challenge_id']
+        if type(identifier) is not int or identifier < 1 or identifier in seen:
+            raise ValueError('KOTH challenge_id must be positive and unique')
+        seen.add(identifier)
+        if not isinstance(source['adapter'], str) or source['adapter'] not in {'generic', 'brick', 'neural', 'shift', 'battle'}:
+            raise ValueError('Unknown KOTH adapter')
+        if not isinstance(source['url'], str):
+            raise ValueError('KOTH url must be HTTP(S)')
+        url = urlsplit(source['url'])
+        if url.scheme not in {'http', 'https'} or not url.hostname or url.username or url.password:
+            raise ValueError('KOTH url must be HTTP(S) without credentials')
+        _ = url.port  # Reject malformed ports at configuration time.
+        maximum = source['max_points']
+        if type(maximum) not in (int, float) or not math.isfinite(maximum) or maximum <= 0:
+            raise ValueError('KOTH max_points must be finite and positive')
     return config
 
 

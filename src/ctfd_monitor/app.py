@@ -49,6 +49,7 @@ PASSWORD = os.environ.get("CTFD_MONITOR_PASSWORD", "")
 TOKEN = os.environ.get("CTFD_MONITOR_TOKEN", "")
 TITLE = "CTFd Monitor"
 KOTH_ENABLED = False
+KOTH_SOURCES = {}
 CODEX_ENABLED = False
 AGENTS_TEMPLATE = None
 AUTO_EXTRACT = False
@@ -298,6 +299,8 @@ def file_url(entry: object) -> str | None:
 def is_koth_challenge(challenge: object) -> bool:
     if not isinstance(challenge, dict):
         return False
+    if str(challenge.get("id")) in KOTH_SOURCES:
+        return True
     return str(challenge.get("type") or "").casefold() == "koth_challenge" or str(challenge.get("category") or "").casefold() == "koth"
 
 
@@ -391,6 +394,7 @@ class SharedState:
         self.lock = threading.RLock()
         self.status = "CONNECTING"
         self.team_name = "-"
+        self.account_id = None
         self.score = 0
         self.rank = "-"
         self.scoreboard: list[dict[str, object]] = []
@@ -421,7 +425,7 @@ class SharedState:
         now = time.monotonic()
         with self.lock:
             self.jobs = [job for job in self.jobs if job.done_at is None or now - job.done_at < DONE_TTL]
-            return {"status": self.status, "team_name": self.team_name, "score": self.score, "rank": self.rank, "scoreboard": copy.deepcopy(self.scoreboard), "contest_end": self.contest_end, "challenges": copy.deepcopy(self.challenges), "koth": copy.deepcopy(self.koth), "codex_usage": copy.deepcopy(self.codex_usage), "events": copy.deepcopy(self.events[-100:]), "jobs": copy.copy(self.jobs)}
+            return {"status": self.status, "team_name": self.team_name, "account_id": self.account_id, "score": self.score, "rank": self.rank, "scoreboard": copy.deepcopy(self.scoreboard), "contest_end": self.contest_end, "challenges": copy.deepcopy(self.challenges), "koth": copy.deepcopy(self.koth), "codex_usage": copy.deepcopy(self.codex_usage), "events": copy.deepcopy(self.events[-100:]), "jobs": copy.copy(self.jobs)}
 
 
 class Monitor:
@@ -453,6 +457,7 @@ class Monitor:
         if not isinstance(self.codex_usage_cache, dict):
             self.codex_usage_cache = {}
         self.team_solves_cache: dict[int, dict[str, object]] = {}
+        self.comparison_solves_cache: dict[tuple[str, str], tuple[float, list[int] | None]] = {}
         self.last_solve_refresh = 0.0
         self.last_config_refresh = 0.0
         self.cleanup_interrupted_work()
@@ -505,6 +510,7 @@ class Monitor:
                 self.state.status = "STALE"
                 self.state.challenges = copy.deepcopy(challenges)
             if isinstance(team, dict):
+                self.state.account_id = team.get('id')
                 self.state.team_name = str(team.get("name") or USERNAME)
                 self.state.score = int(team.get("score") or 0)
                 place = team.get("place")
@@ -547,6 +553,14 @@ class Monitor:
         self.koth_sessions.add(challenge_id)
 
     def koth_json(self, challenge: dict[str, object], url: str, *, session: bool = False) -> dict[str, object]:
+        if str(challenge.get('id')) in KOTH_SOURCES:
+            # Explicit sources are public adapters, isolated from CTFd sessions.
+            request = urllib.request.Request(url, headers={'Accept': 'application/json'})
+            with urllib.request.urlopen(request, timeout=20) as response:
+                value = json.load(response)
+            if not isinstance(value, dict):
+                raise RuntimeError('unexpected KOTH response')
+            return value
         if session:
             self.ensure_koth_session(challenge)
         request = urllib.request.Request(url, headers={"Accept": "application/json", "User-Agent": "ctfd-monitor/1.0"})
@@ -639,6 +653,30 @@ class Monitor:
         leader_score = float(leader.get("points") or 0)
         return {"rank": int(own["rank"]) if isinstance(own, dict) and own.get("rank") is not None else None, "teams": len(teams), "score": score, "leader_score": leader_score, "points": self.projected_points(score, leader_score), "rounds": int(own.get("scored_games") or 0) if isinstance(own, dict) else 0}
 
+    def refresh_generic_koth(self, source):
+        # Deliberately independent of both CTFd cookie jars and Authorization headers.
+        request = urllib.request.Request(source['url'], headers={'Accept': 'application/json'})
+        with urllib.request.urlopen(request, timeout=20) as response:
+            value = json.load(response)
+        if not isinstance(value, dict) or not isinstance(value.get('teams'), list):
+            raise ValueError('Invalid generic KOTH standings')
+        team = self.client.request_json('/api/v1/teams/me')['data']
+        rows = value['teams']
+        scores = {}
+        for row in rows:
+            identifier = int(row['team_id'])
+            score = float(row['raw_score'])
+            if identifier in scores or not math.isfinite(score) or score < 0:
+                raise ValueError('Invalid generic KOTH score')
+            scores[identifier] = score
+        leader = max(scores.values(), default=0)
+        score = scores.get(int(team['id']), 0)
+        maximum = float(source['max_points'])
+        table = {str(key): int(maximum * raw / leader) if leader else 0 for key, raw in scores.items()}
+        return {'rank': 1 + sum(raw > score for raw in scores.values()) if int(team['id']) in scores else None,
+                'teams': len(scores), 'score': score, 'leader_score': leader, 'points': table.get(str(team['id']), 0),
+                'rounds': value.get('round'), 'team_points': table, 'max_points': maximum}
+
     def refresh_koth(self) -> None:
         with self.koth_lock:
             challenges = copy.deepcopy(self.koth_challenges)
@@ -653,16 +691,24 @@ class Monitor:
             entry.update({"id": int(challenge.get("id") or key), "name": str(challenge.get("name") or f"KOTH {key}")})
             try:
                 challenge_id = int(challenge.get("id") or 0)
-                if challenge_id == 7:
+                source = KOTH_SOURCES.get(str(challenge_id), {})
+                adapter = source.get('adapter') or {7: 'brick', 9: 'neural', 16: 'shift', 17: 'battle'}.get(challenge_id)
+                if source:
+                    challenge = dict(challenge, koth_url=source['url'])
+                if adapter == 'generic':
+                    metrics = self.refresh_generic_koth(source)
+                elif adapter == 'brick':
                     metrics = self.refresh_brick_koth(challenge, team_name)
-                elif challenge_id == 9:
+                elif adapter == 'neural':
                     metrics = self.refresh_neural_koth(challenge, team_name)
-                elif challenge_id == 16:
+                elif adapter == 'shift':
                     metrics = self.refresh_shift_koth(challenge)
-                elif challenge_id == 17:
+                elif adapter == 'battle':
                     metrics = self.refresh_battle_koth(challenge)
                 else:
                     raise RuntimeError("unsupported KOTH adapter")
+                if source and adapter != 'generic':
+                    metrics['points'] = float(metrics.get('points') or 0) * float(source['max_points']) / KOTH_MAX_POINTS
                 entry.update(metrics)
                 entry.update({"status": "LIVE", "error": "", "updated_at": iso_now()})
             except Exception as error:
@@ -1214,7 +1260,54 @@ class Monitor:
 
     @staticmethod
     def scoreboard_team(rows: list[dict[str, object]], team: dict[str, object]) -> dict[str, object] | None:
-        return next((row for row in rows if row.get("account_id") == team.get("id") or row.get("id") == team.get("id") or row.get("name") == team.get("name")), None)
+        identifier = team.get('id')
+        if identifier is not None:
+            matched = next((row for row in rows if str(row.get('account_id', row.get('id'))) == str(identifier)), None)
+            if matched:
+                return matched
+            rows = [row for row in rows if row.get('account_id', row.get('id')) is None]
+        return next((row for row in rows if team.get('name') and row.get('name') == team['name']), None)
+
+    def enrich_comparison_solves(self, rows: list[dict[str, object]], team: dict[str, object]) -> None:
+        """Read public solves for the four displayed opponents, at most once per interval.
+
+        Missing/private data stays unknown. Full-scoreboard extensions already
+        carrying solved IDs need no additional requests.
+        """
+        own = self.scoreboard_team(rows, team)
+        opponents = sorted((row for row in rows if row is not own), key=lambda row: (comparison_position(row, len(rows) + 1), str(row.get('name') or '').casefold()))[:4]
+        for row in opponents:
+            if isinstance(row.get('solved_challenge_ids'), list):
+                continue
+            identifier = row.get('account_id', row.get('id'))
+            mode = ACCOUNT_MODE if ACCOUNT_MODE != 'auto' else {'team': 'teams', 'user': 'users'}.get(row.get('account_type'))
+            if mode not in {'teams', 'users'} or not str(identifier).isdigit():
+                continue
+            key = (mode, str(identifier))
+            now = time.monotonic()
+            cached = self.comparison_solves_cache.get(key)
+            if cached is None or now - cached[0] >= SOLVE_POLL_INTERVAL:
+                ids = None
+                try:
+                    data = self.client.request_json(f'/api/v1/{mode}/{identifier}/solves').get('data')
+                    if isinstance(data, list):
+                        parsed = []
+                        for solve in data:
+                            if not isinstance(solve, dict):
+                                break
+                            challenge = solve.get('challenge')
+                            number = solve.get('challenge_id', challenge.get('id') if isinstance(challenge, dict) else None)
+                            if not str(number).isdigit():
+                                break
+                            parsed.append(int(number))
+                        else:
+                            ids = parsed
+                except ApiError:
+                    pass
+                cached = (time.monotonic(), ids)
+                self.comparison_solves_cache[key] = cached
+            if cached[1] is not None:
+                row['solved_challenge_ids'] = list(cached[1])
 
     def fetch_rank(self, team: dict[str, object], rows: list[dict[str, object]] | None = None) -> str:
         rows = self.fetch_scoreboard() if rows is None else rows
@@ -1396,6 +1489,7 @@ class Monitor:
                     self.schedule_extract(challenge, file_info, deploy_dir)
         team = current.get("team") if isinstance(current.get("team"), dict) else {}
         scoreboard = self.fetch_scoreboard()
+        self.enrich_comparison_solves(scoreboard, team)
         own_scoreboard = self.scoreboard_team(scoreboard, team)
         rank = self.fetch_rank(team, scoreboard)
         display_challenges = copy.deepcopy(new_challenges)
@@ -1407,6 +1501,7 @@ class Monitor:
             challenge["marker_expires"] = marker[1] if marker else None
         with self.state.lock:
             self.state.status = "LIVE"
+            self.state.account_id = team.get('id')
             self.state.team_name = str(team.get("name") or USERNAME)
             fallback_score = int(team.get("score") or sum(int(challenge.get("value") or 0) for challenge in new_challenges.values() if isinstance(challenge, dict) and challenge.get("solved")))
             self.state.score = float(own_scoreboard.get("total_score", own_scoreboard.get("score", fallback_score)) or 0) if own_scoreboard else fallback_score
@@ -1521,7 +1616,7 @@ def render_koth(view: dict[str, object], width: int) -> list[str]:
     entries = sorted(view.get("koth", {}).values(), key=lambda entry: (int(entry.get("id") or 0), str(entry.get("name") or "").casefold()))
     known_points = [float(entry["points"]) for entry in entries if isinstance(entry.get("points"), (int, float))]
     total = sum(known_points)
-    maximum = len(entries) * KOTH_MAX_POINTS
+    maximum = sum(float(KOTH_SOURCES.get(str(entry.get('id')), {}).get('max_points', KOTH_MAX_POINTS)) for entry in entries)
     lines: list[str] = []
     for entry in entries:
         name = str(entry.get("name") or "KOTH")
@@ -1532,7 +1627,8 @@ def render_koth(view: dict[str, object], width: int) -> list[str]:
         points = entry.get("points")
         score_text = f"{float(score):.2f}" if isinstance(score, (int, float)) else "--"
         points_text = f"{float(points):.2f}" if isinstance(points, (int, float)) else "--"
-        ratio = max(0.0, min(1.0, float(points) / KOTH_MAX_POINTS)) if isinstance(points, (int, float)) else 0.0
+        entry_maximum = float(KOTH_SOURCES.get(str(entry.get('id')), {}).get('max_points', KOTH_MAX_POINTS))
+        ratio = max(0.0, min(1.0, float(points) / entry_maximum)) if isinstance(points, (int, float)) else 0.0
         bar_width = 20 if width >= 110 else max(8, min(16, width - 64))
         filled = round(bar_width * ratio)
         bar_color = GREEN if entry.get("status") == "LIVE" else YELLOW
@@ -1546,7 +1642,7 @@ def render_koth(view: dict[str, object], width: int) -> list[str]:
             left = f"{pad(truncate(name, 40), 40)}  KOTH {score_text:>10}{state}"
         else:
             left = f"{pad(truncate(name, 32), 32)}{state}"
-        right = f"Rank {rank_text:>9}  {bar}  {points_text:>8} / 1500 pt"
+        right = f"Rank {rank_text:>9}  {bar}  {points_text:>8} / {entry_maximum:g} pt"
         content_width = width - 4
         left_width = max(1, content_width - display_width(right))
         line = f"{pad(truncate(left, max(1, left_width - 2)), left_width)}{right}"
@@ -1574,78 +1670,107 @@ def comparison_status_cell(ours: bool, theirs: bool) -> str:
     return paint(f"{'.':^5}", GRAY)
 
 
-def comparison_delta_cell(value: float) -> str:
+def comparison_delta_cell(value: float, width: int = 5) -> str:
     if value > 0:
-        return f"{RED_BG}{RED}{value:+5.0f}{RESET}"
+        return f"{RED_BG}{RED}{value:+{width}.0f}{RESET}"
     if value < 0:
-        return f"{GREEN_BG}{GREEN}{value:+5.0f}{RESET}"
-    return f"{value:+5.0f}"
+        return f"{GREEN_BG}{GREEN}{value:+{width}.0f}{RESET}"
+    return f"{value:+{width}.0f}"
 
 
 def render_team_comparison(view: dict[str, object], width: int) -> list[str]:
-    rows = [row for row in view.get("scoreboard", []) if isinstance(row, dict)]
-    own = next((row for row in rows if str(row.get("name") or "") == str(view.get("team_name") or "")), None)
+    rows = [row for row in view.get('scoreboard', []) if isinstance(row, dict)]
+    own = Monitor.scoreboard_team(rows, {'id': view.get('account_id'), 'name': view.get('team_name')})
+    title = 'TEAM COMPARISON · TOP 4 OPPONENTS'
     if not own:
-        return boxed("TEAM COMPARISON · TOP 4 OPPONENTS", [paint("WAITING", YELLOW, bold=True)], width, BLUE)
+        return boxed(title, [paint('WAITING', YELLOW, bold=True)], width, BLUE)
     own_rank = comparison_position(own, len(rows) + 1)
-
-    opponents = sorted((row for row in rows if row is not own), key=lambda row: (comparison_position(row, len(rows) + 1), str(row.get("name") or "").casefold()))[:4]
+    opponents = sorted((row for row in rows if row is not own), key=lambda row: (comparison_position(row, len(rows) + 1), str(row.get('name') or '').casefold()))[:4]
     if not opponents:
-        return boxed("TEAM COMPARISON · TOP 4 OPPONENTS", [paint("NO OPPONENTS", YELLOW, bold=True)], width, BLUE)
-    if not KOTH_ENABLED:
-        own_total = float(own.get('total_score', own.get('score', 0)) or 0)
-        lines = [f"{'RANK':<6}{'ACCOUNT':<24}{'SCORE':>10}{'DELTA':>10}"]
-        for row in [*opponents, own]:
-            score = float(row.get('total_score', row.get('score', 0)) or 0)
-            lines.append(f"#{comparison_position(row, len(rows) + 1):<5}{pad(truncate(str(row.get('name') or '-'), 24), 24)}{score:>10g}{score - own_total:>+10g}")
-        return boxed(f"SCORE COMPARISON · OUR ACTUAL #{own_rank}", lines, width, BLUE)
+        return boxed(title, [paint('NO OPPONENTS', YELLOW, bold=True)], width, BLUE)
+
     challenges = sorted(
-        (
-            (int(challenge.get("id") or key), str(challenge.get("name") or f"Challenge {key}"))
-            for key, challenge in view.get("challenges", {}).items()
-            if isinstance(challenge, dict) and not is_koth_challenge(challenge)
-        ),
+        ((int(challenge.get('id') or key), str(challenge.get('name') or f'Challenge {key}'))
+         for key, challenge in view.get('challenges', {}).items()
+         if isinstance(challenge, dict) and not is_koth_challenge(challenge)),
         key=lambda item: item[0],
     )
-    own_solved = {int(value) for value in own.get("solved_challenge_ids", []) if str(value).isdigit()}
-    own_total = float(own.get("total_score", own.get("score", 0)) or 0)
-    own_koth = own.get("koth_score_detail") if isinstance(own.get("koth_score_detail"), dict) else {}
-    koth_names = ["King of the Brick-Breaker", "Neural Dominion", "SHIFT", "BATTLE"]
+    # Preserve the original comparison layout; only the data sources vary.
+    arenas = []
+    if KOTH_SOURCES:
+        names = {str(c.get('id', key)): str(c.get('name') or key) for key, c in view.get('challenges', {}).items() if isinstance(c, dict)}
+        for key in sorted(KOTH_SOURCES, key=int):
+            name = names.get(key) or str(view.get('koth', {}).get(key, {}).get('name') or key)
+            arenas.append((key, name, name if display_width(name) <= 10 else f'K{key}'))
+    elif KOTH_ENABLED:
+        arenas = [(None, name, label) for name, label in (
+            ('King of the Brick-Breaker', 'BRK'), ('Neural Dominion', 'NEU'),
+            ('SHIFT', 'SHF'), ('BATTLE', 'BAT'))]
+    cell_width = max([5, *(display_width(label) for _, _, label in arenas)]) + (1 if KOTH_SOURCES else 0)
+
+    def arena_points(row, key, name):
+        if key is None:
+            detail = row.get('koth_score_detail')
+            value = detail.get(name) if isinstance(detail, dict) else None
+        else:
+            entry = view.get('koth', {}).get(key, {})
+            if entry.get('status') != 'LIVE':
+                return None
+            points = entry.get('team_points', {})
+            identifier = str(row.get('account_id', row.get('id', '')))
+            value = points.get(identifier) if isinstance(points, dict) else None
+        return float(value) if isinstance(value, (int, float)) and math.isfinite(value) else None
+
+    own_total = float(own.get('total_score', own.get('score', 0)) or 0)
+    left_lines = [f"{'RK TEAM':<16}{'ΔPT':>8} " + ''.join(f'{label:^{cell_width}}' for _, _, label in arenas)]
+    left_lines.append(paint('─' * (25 + cell_width * len(arenas)), GRAY))
+    for row in [*opponents, own]:
+        total = float(row.get('total_score', row.get('score', 0)) or 0)
+        line = f"#{comparison_position(row, len(rows) + 1):<2} {pad(truncate(str(row.get('name') or 'Team'), 12), 12)} {total - own_total:+7.0f} "
+        for key, name, _ in arenas:
+            theirs, ours = arena_points(row, key, name), arena_points(own, key, name)
+            line += comparison_delta_cell(theirs - ours, cell_width) if theirs is not None and ours is not None else paint(f"{'?':^{cell_width}}", YELLOW)
+        left_lines.append(line)
+
+    own_ids = own.get('solved_challenge_ids')
+    own_solved = {int(value) for value in own_ids if str(value).isdigit()} if isinstance(own_ids, list) else {
+        int(challenge.get('id') or key) for key, challenge in view.get('challenges', {}).items()
+        if isinstance(challenge, dict) and challenge.get('solved')
+    }
     solved_by_opponent = [
-        {int(value) for value in opponent.get("solved_challenge_ids", []) if str(value).isdigit()}
-        for opponent in opponents
+        {int(value) for value in row['solved_challenge_ids'] if str(value).isdigit()}
+        if isinstance(row.get('solved_challenge_ids'), list) else None for row in opponents
     ]
-    visible_challenges = [
-        (challenge_id, name)
-        for challenge_id, name in challenges
-        if not (challenge_id in own_solved and all(challenge_id in solved for solved in solved_by_opponent))
-    ]
-
-    left_lines = [f"{'RK TEAM':<16}{'ΔPT':>8} {'BRK':^5}{'NEU':^5}{'SHF':^5}{'BAT':^5}", paint("─" * 45, GRAY)]
-    for opponent in opponents:
-        prefix = f"#{comparison_position(opponent, len(rows) + 1):<2} {pad(truncate(str(opponent.get('name') or 'Team'), 12), 12)} {float(opponent.get('total_score', opponent.get('score', 0)) or 0) - own_total:+7.0f} "
-        opponent_koth = opponent.get("koth_score_detail") if isinstance(opponent.get("koth_score_detail"), dict) else {}
-        koth = "".join(comparison_delta_cell(float(opponent_koth.get(name) or 0) - float(own_koth.get(name) or 0)) for name in koth_names)
-        left_lines.append(prefix + koth)
-    left_lines.append(f"#{own_rank:<2} {pad(truncate(str(own.get('name') or 'OUR TEAM'), 12), 12)} {0:+7.0f} " + f"{0:+5.0f}" * 4)
-
-    team_headers = [f"#{comparison_position(opponent, len(rows) + 1)}" for opponent in opponents] + ["US"]
-    content_width = width - 4
-    divider = paint(" │ ", GRAY)
-    left_width = 48 if content_width >= 102 else max(12, (content_width - 3) // 2)
-    right_width = max(1, content_width - left_width - 3)
-    name_width = max(1, right_width - 25)
-    right_lines = [f"{'JEOPARDY CHALLENGE':<{name_width}}" + "".join(f"{header:^5}" for header in team_headers), paint("─" * right_width, GRAY)]
-    for challenge_id, name in visible_challenges:
-        cells = "".join(comparison_status_cell(challenge_id in own_solved, challenge_id in solved) for solved in solved_by_opponent)
-        own_cell = f"{'✓' if challenge_id in own_solved else '':^5}"
-        right_lines.append(f"{pad(truncate(name, name_width), name_width)}{cells}{own_cell}")
-    lines: list[str] = []
-    for index in range(max(len(left_lines), len(right_lines))):
-        left = left_lines[index] if index < len(left_lines) else ""
-        right = right_lines[index] if index < len(right_lines) else ""
-        lines.append(pad(truncate(left, left_width), left_width) + divider + pad(truncate(right, right_width), right_width))
-    return boxed(f"TEAM COMPARISON · TOP 4 OPPONENTS · OUR ACTUAL #{own_rank}", lines, width, BLUE)
+    visible = [(number, name) for number, name in challenges
+               if not (number in own_solved and all(ids is not None and number in ids for ids in solved_by_opponent))]
+    headers = [f'#{comparison_position(row, len(rows) + 1)}' for row in opponents] + ['US']
+    content_width = max(1, width - 4)
+    preferred_left = 28 + cell_width * len(arenas)
+    minimum_right = 18 + 5 * len(headers)
+    side_by_side = content_width >= preferred_left + 3 + minimum_right
+    left_width = preferred_left if side_by_side else content_width
+    right_width = content_width - left_width - 3 if side_by_side else content_width
+    name_width = max(1, right_width - 5 * len(headers))
+    right_lines = []
+    heading = 'JEOPARDY CHALLENGE'
+    if name_width < display_width(heading):
+        right_lines.append(heading)
+        heading = 'CHALLENGE'
+    right_lines.extend([pad(truncate(heading, name_width), name_width) + ''.join(f'{header:^5}' for header in headers), paint('─' * right_width, GRAY)])
+    for number, name in visible:
+        cells = ''.join(comparison_status_cell(number in own_solved, number in ids) if ids is not None else paint(f"{'?':^5}", YELLOW) for ids in solved_by_opponent)
+        right_lines.append(pad(truncate(name, name_width), name_width) + cells + f"{'✓' if number in own_solved else '':^5}")
+    if any(ids is None for ids in solved_by_opponent):
+        right_lines.append(paint('? = solves unavailable', YELLOW))
+    if side_by_side:
+        lines = []
+        for index in range(max(len(left_lines), len(right_lines))):
+            left = left_lines[index] if index < len(left_lines) else ''
+            right = right_lines[index] if index < len(right_lines) else ''
+            lines.append(pad(truncate(left, left_width), left_width) + paint(' │ ', GRAY) + pad(truncate(right, right_width), right_width))
+    else:
+        lines = left_lines + [''] + right_lines
+    return boxed(f'{title} · OUR ACTUAL #{own_rank}', lines, width, BLUE)
 
 
 def competition_countdown(view: dict[str, object]) -> tuple[str, str]:
@@ -1833,7 +1958,7 @@ def render_resources_compact(resources: dict[str, object], width: int, codex_usa
 def render_koth_compact(view: dict[str, object], width: int) -> list[str]:
     entries = [entry for entry in view.get("koth", {}).values() if isinstance(entry, dict)]
     total = sum(float(entry["points"]) for entry in entries if isinstance(entry.get("points"), (int, float)))
-    maximum = len(entries) * KOTH_MAX_POINTS
+    maximum = sum(float(KOTH_SOURCES.get(str(entry.get('id')), {}).get('max_points', KOTH_MAX_POINTS)) for entry in entries)
     return boxed(f"KOTH · {len(entries)} ARENAS · PROJECTED {total:.2f} / {maximum:.0f} pt · COMPACT", [""], width, CYAN)
 
 
@@ -2015,7 +2140,7 @@ def headless_main() -> int:
 
 def configure(path: Path | None) -> None:
     global BASE_URL, USERNAME, PASSWORD, TOKEN, TITLE, BASE_DIR, STATE_DIR
-    global KOTH_ENABLED, CODEX_ENABLED, HELPER_FILES, AGENTS_TEMPLATE, POLL_INTERVAL, MAX_WORKERS
+    global KOTH_ENABLED, KOTH_SOURCES, CODEX_ENABLED, HELPER_FILES, AGENTS_TEMPLATE, POLL_INTERVAL, MAX_WORKERS
     global AUTO_EXTRACT, MAX_DOWNLOAD_BYTES, CONTEST_END, ACCOUNT_MODE
     config = load_profile(path)
     anchor = path.resolve().parent if path else Path.cwd()
@@ -2059,7 +2184,8 @@ def configure(path: Path | None) -> None:
         parsed_end = datetime.fromisoformat(CONTEST_END.replace('Z', '+00:00'))
         if parsed_end.tzinfo is None:
             raise ValueError('contest_end requires a timezone')
-    KOTH_ENABLED = config.get('koth', False)
+    KOTH_SOURCES = {str(source['challenge_id']): source for source in config.get('koth_sources', [])}
+    KOTH_ENABLED = config.get('koth', False) or bool(KOTH_SOURCES)
     CODEX_ENABLED = config.get('codex_usage', False)
     helpers = config.get('helpers', list(REQUIRED_HELPERS))
     if not isinstance(helpers, list) or any(not isinstance(x, str) or Path(x).name != x for x in helpers):

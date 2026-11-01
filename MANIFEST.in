@@ -10,3 +10,7 @@ include 22.sh 25.sh
 recursive-include tests/fixtures *.sh
 
 recursive-include tests *.md
+
+include lab.py
+recursive-include lab *.py
+recursive-include tests/fixtures *.json

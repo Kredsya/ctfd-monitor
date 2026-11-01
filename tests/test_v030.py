@@ -101,8 +101,9 @@ class WorkspaceReleaseContracts(Scenario):
         view.update(team_name='Ours',scoreboard=[{'name':'Other','pos':1,'score':150},{'name':'Ours','pos':2,'score':100}])
         rendered='\n'.join(m.render_team_comparison(view,120))
         self.assertIn('+50',rendered)
-        for unsupported in ('BRK','NEU','SHF','BAT','JEOPARDY CHALLENGE'):
+        for unsupported in ('BRK','NEU','SHF','BAT'):
             self.assertNotIn(unsupported,rendered)
+        self.assertIn('JEOPARDY CHALLENGE',rendered)
 
     def test_terminal_controls_and_width_bounds(self):
         for attack in ('\x1b]52;c;payload\x07','\x1b[2J','\x1b[1;1H','\x1bPpayload\x1b\\','\x9b2J','\r\nINJECTED'):

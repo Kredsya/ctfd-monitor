@@ -2,6 +2,7 @@
 from __future__ import annotations
 import http.cookiejar
 import json
+import re
 import time
 import urllib.error
 import urllib.parse
@@ -107,7 +108,15 @@ class CTFdClient:
             if not isinstance(result, dict):
                 result = {}
             message = str(result.get("message") or result.get("code") or error.reason)
-            raise ApiError(path, error.code, message, str(result.get("code") or "")) from error
+            code = str(result.get("code") or "")
+            # Official CTFd 3.8.9's during_ctf_time_only emits a message, no code.
+            # Restrict matching to challenge routes and exact measured messages.
+            if not code and error.code == 403 and re.fullmatch(r'/api/v[12]/challenges(?:/\d+|/attempt)?', path):
+                if re.fullmatch(r'.+ has not started yet', message):
+                    code = 'competition_not_started'
+                elif re.fullmatch(r'.+ has ended', message):
+                    code = 'competition_ended'
+            raise ApiError(path, error.code, message, code) from error
         except (urllib.error.URLError, TimeoutError) as error:
             raise ApiError(path, 0, str(error)) from error
         if not isinstance(result, dict) or result.get("success") is not True:
@@ -157,8 +166,14 @@ class CTFdClient:
         form = urllib.parse.urlencode({"name": self.username, "password": self.password, "nonce": parser.nonce}).encode("utf-8")
         request = urllib.request.Request(login_url, data=form, headers={"Content-Type": "application/x-www-form-urlencoded", "User-Agent": "ctfd-monitor/1.0"})
         try:
-            with self.opener.open(request, timeout=30) as response:
-                response.read(1)
+            try:
+                with self.opener.open(request, timeout=30) as response:
+                    response.read(1)
+            except urllib.error.HTTPError as error:
+                # Stock CTFd redirects a successful login to /challenges, which
+                # is forbidden before start. Authenticate against users/me.
+                if error.code != 403 or urllib.parse.urlsplit(error.url).path != '/challenges':
+                    raise
             me = self.request_json("/api/v1/users/me")
         except (urllib.error.URLError, ApiError) as error:
             raise ApiError("/login", 401, "login failed") from error
