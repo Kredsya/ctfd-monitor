@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ctfd-monitor"
-version = "0.3.8"
+version = "0.3.9"
 description = "Profile-driven CTFd challenge monitor and attachment downloader"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -16,6 +16,3 @@ ctfd-monitor = "ctfd_monitor.app:entrypoint"
 
 [tool.setuptools.packages.find]
 where = ["src"]
-
-[tool.setuptools.package-data]
-ctfd_monitor = ["*.sh"]

@@ -19,7 +19,7 @@ from pathlib import Path
 
 from ctfd_monitor.config import load_profile
 
-REPO = Path(__file__).resolve().parents[1]
+REPO = Path(__file__).resolve().parents[2]
 
 
 def interactive_install(root, answers, env):
@@ -153,7 +153,7 @@ class InstallerTests(unittest.TestCase):
                         self.assertTrue((problem/'chall/AGENTS.md').is_file())
                         for helper in ('22.sh','25.sh'):
                             self.assertTrue((problem/helper).is_file(), f'Installed monitor did not provision {helper}')
-                            self.assertEqual((problem/helper).read_bytes(), (REPO/'tests/fixtures/original'/helper).read_bytes())
+                            self.assertEqual((problem/helper).read_bytes(), (REPO/'.github/tests/fixtures/original'/helper).read_bytes())
 
                 # The documented bare command must also work in an actual terminal.
                 master, slave = pty.openpty()

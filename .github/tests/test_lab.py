@@ -10,7 +10,7 @@ from ctfd_monitor.config import load_profile
 from ctfd_monitor.client import CTFdClient, ApiError
 from ctfd_monitor import app
 
-spec=importlib.util.spec_from_file_location('lab_runner',Path(__file__).resolve().parents[1]/'lab.py')
+spec=importlib.util.spec_from_file_location('lab_runner',Path(__file__).resolve().parents[2]/'lab.py')
 lab=importlib.util.module_from_spec(spec); spec.loader.exec_module(lab)
 
 class LabTests(unittest.TestCase):

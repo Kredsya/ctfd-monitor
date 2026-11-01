@@ -19,9 +19,9 @@ jobs:
       - run: python -m pip install dist/*.whl
       - run: sudo apt-get update
       - run: sudo apt-get install -y tmux
-      - run: python -m coverage run --branch --source=ctfd_monitor tests/run_suite.py
+      - run: python -m coverage run --branch --source=ctfd_monitor .github/tests/run_suite.py
       - if: always()
-        run: python tests/mutation_smoke.py
+        run: python .github/tests/mutation_smoke.py
       - if: always()
         run: python -m coverage xml -o test-results/coverage.xml
       - if: always()
@@ -42,7 +42,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: PYTHONPATH=src python tests/stock_ctfd_smoke.py
+      - run: PYTHONPATH=src python .github/tests/stock_ctfd_smoke.py
   lab-smoke:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -85,4 +85,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           (cd release && sha256sum *.whl *.tar.gz > SHA256SUMS)
-          gh release create "$GITHUB_REF_NAME" release/* --verify-tag --title "CTFd Monitor $GITHUB_REF_NAME" --notes-file RELEASE-NOTES.md
+          gh release create "$GITHUB_REF_NAME" release/* --verify-tag --title "CTFd Monitor $GITHUB_REF_NAME" --generate-notes

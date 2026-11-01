@@ -8,7 +8,7 @@ import sys
 import unittest
 import ctfd_monitor
 
-ROOT=Path(__file__).resolve().parents[1]
+ROOT=Path(__file__).resolve().parents[2]
 
 class EvidenceResult(unittest.TextTestResult):
     def __init__(self,*args,**kwargs):
@@ -21,7 +21,7 @@ class EvidenceResult(unittest.TextTestResult):
 
 def main():
     output=ROOT/'test-results'; output.mkdir(exist_ok=True)
-    suite=unittest.defaultTestLoader.discover(str(ROOT/'tests'))
+    suite=unittest.defaultTestLoader.discover(str(ROOT/'.github/tests'))
     result=unittest.TextTestRunner(verbosity=2,resultclass=EvidenceResult).run(suite)
     record={
         'revision':subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip(),

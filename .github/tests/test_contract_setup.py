@@ -15,7 +15,7 @@ class SetupContracts(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory(); self.addCleanup(self.temp.cleanup)
         self.root=Path(self.temp.name)
-        repo=Path(__file__).resolve().parents[1]
+        repo=Path(__file__).resolve().parents[2]
         for name in ('22.sh','25.sh'):
             shutil.copy2(repo/name,self.root/name)
 

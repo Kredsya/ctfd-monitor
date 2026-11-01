@@ -1,6 +1,6 @@
 # v0.2.0 회귀 검사 결과
 
-이 문서는 `test/full-regression-audit` 브랜치의 **수정 전 기록**이다. v0.3.0의 현재 결과와 혼동하지 않는다. 수정 근거와 새 배포 계약은 [v0.3.0 설계](../docs/v0.3.0-design.md)에 있다.
+이 문서는 `test/full-regression-audit` 브랜치의 **수정 전 기록**이다. v0.3.0의 현재 결과와 혼동하지 않는다. 수정 근거와 새 배포 계약은 [v0.3.0 설계](https://github.com/Kredsya/ctfd-monitor/blob/v0.3.8/docs/v0.3.0-design.md)에 있다.
 
 제품 기준: `3246754` (`v0.2.0`). 테스트 재작성 중 제품 `src/ctfd_monitor/`는 수정하지 않았다.
 

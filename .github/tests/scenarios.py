@@ -12,7 +12,7 @@ from urllib.parse import urlsplit
 
 from ctfd_monitor import app as m
 
-REPO = Path(__file__).resolve().parents[1]
+REPO = Path(__file__).resolve().parents[2]
 
 
 class Scenario(unittest.TestCase):

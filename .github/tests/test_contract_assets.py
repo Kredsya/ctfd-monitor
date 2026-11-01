@@ -12,7 +12,7 @@ class AssetContracts(Scenario):
             with self.subTest(name=name):
                 actual = REPO / name
                 self.assertTrue(actual.is_file(), f'{name} must ship in a fresh clone')
-                self.assertEqual(actual.read_bytes(), (REPO / 'tests/fixtures/original' / name).read_bytes())
+                self.assertEqual(actual.read_bytes(), (REPO / '.github/tests/fixtures/original' / name).read_bytes())
                 self.assertTrue(os.access(actual, os.X_OK))
 
     def test_default_requires_both_helpers(self):
@@ -35,7 +35,7 @@ class AssetContracts(Scenario):
     def test_copy_update_permissions_and_existing_work_preserved(self):
         m.BASE_DIR.mkdir(parents=True)
         for name in ('22.sh','25.sh'):
-            shutil.copy2(REPO / 'tests/fixtures/original' / name, m.BASE_DIR / name)
+            shutil.copy2(REPO / '.github/tests/fixtures/original' / name, m.BASE_DIR / name)
         with patch.object(m, 'HELPER_FILES', ('22.sh','25.sh')):
             monitor = self.new_monitor()
         challenge = self.challenge()

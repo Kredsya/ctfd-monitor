@@ -1,6 +1,6 @@
 """Read-only client checks against an isolated official CTFd image.
 
-Run: PYTHONPATH=src python3 tests/stock_ctfd_smoke.py [--sudo]
+Run: PYTHONPATH=src python3 .github/tests/stock_ctfd_smoke.py [--sudo]
 Docker is required only for this developer test, never for monitor installation.
 """
 import argparse

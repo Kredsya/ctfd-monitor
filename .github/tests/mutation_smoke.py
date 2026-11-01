@@ -7,7 +7,7 @@ import subprocess
 import sys
 import tempfile
 
-ROOT=Path(__file__).resolve().parents[1]
+ROOT=Path(__file__).resolve().parents[2]
 MUTATIONS=[
     ('token-json-header','client.py','"Content-Type": "application/json", ', '', 'test_contract_http.HttpContracts.test_token_is_sent_with_json_content_type_and_no_login_post'),
     ('download-dedup','app.py','            if key in self.active_files:\n                return\n','', 'test_contract_transfers.TransferContracts.test_duplicate_scheduling_only_downloads_once'),
@@ -17,7 +17,7 @@ MUTATIONS=[
 
 
 def run(source,test):
-    env=dict(os.environ,PYTHONPATH=str(source)+os.pathsep+str(ROOT/'tests'))
+    env=dict(os.environ,PYTHONPATH=str(source)+os.pathsep+str(ROOT/'.github/tests'))
     return subprocess.run([sys.executable,'-m','unittest',test,'-v'],cwd=ROOT,env=env,capture_output=True,text=True,timeout=20)
 
 
@@ -30,6 +30,8 @@ def main():
         with tempfile.TemporaryDirectory(prefix='ctfd-mutant-') as d:
             source=Path(d)/'src'
             shutil.copytree(ROOT/'src',source,ignore=shutil.ignore_patterns('__pycache__','*.egg-info'))
+            for helper in ('22.sh', '25.sh'):
+                shutil.copy2(ROOT/helper, source.parent/helper)
             file=source/'ctfd_monitor'/filename
             text=file.read_text()
             if before not in text: raise RuntimeError(f'Mutation target changed: {name}')

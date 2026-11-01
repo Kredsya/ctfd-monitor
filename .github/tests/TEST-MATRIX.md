@@ -1,6 +1,6 @@
 # 전체 회귀 검증 기준
 
-감사 기준 구현: v0.2.0 (`3246754`), 현재 제품: v0.3.8. 감사에서 드러낸 계약을 유지하며 제품을 수정한다. 실패를 expectedFailure/skip으로 숨기지 않으며 통과 개수와 제품 완성도를 동일시하지 않는다. 수정 전 실패 목록은 [BASELINE.md](BASELINE.md)에 보존한다.
+감사 기준 구현: v0.2.0 (`3246754`), 현재 제품: v0.3.9. 감사에서 드러낸 계약을 유지하며 제품을 수정한다. 실패를 expectedFailure/skip으로 숨기지 않으며 통과 개수와 제품 완성도를 동일시하지 않는다. 수정 전 실패 목록은 [BASELINE.md](BASELINE.md)에 보존한다.
 
 ## 판정 근거
 
@@ -48,11 +48,11 @@
 
 ```sh
 python -m build
-python -m coverage run --branch --source=ctfd_monitor tests/run_suite.py
-python tests/mutation_smoke.py
+python -m coverage run --branch --source=ctfd_monitor .github/tests/run_suite.py
+python .github/tests/mutation_smoke.py
 python -m coverage report -m
 python -m coverage xml -o test-results/coverage.xml
-PYTHONPATH=src python3 tests/stock_ctfd_smoke.py  # Docker 필요
+PYTHONPATH=src python3 .github/tests/stock_ctfd_smoke.py  # Docker 필요
 ```
 
 `test-results/results.json`에 제품 버전·import된 패키지 경로·커밋·작업 트리 변경 여부·테스트 ID·실패 trace·오류·skip을 저장한다. 실패가 하나라도 있으면 종료 코드 1이다. CI는 실패해도 test-evidence artifact를 업로드한다. 과거 v0.2.0 release와 감사 커밋은 유지한다. 새 태그의 전체 CI 성공을 배포 조건으로 삼는다.
@@ -108,3 +108,9 @@ PYTHONPATH=src python3 tests/stock_ctfd_smoke.py  # Docker 필요
 ## v0.3.8 추가 검증
 
 - test_installer: checkout·sdist 설치 후 실제 PTY에서 SIGINT 종료 시 화면 삭제·색상 초기화·커서 위치 및 표시 복원 확인.
+
+## v0.3.9 구조 정리
+
+- 테스트·fixture는 `.github/tests/`에서 실행하며 사용자용 배포 파일에서는 제외한다.
+- 루트 보조 스크립트를 유일한 배포 원본으로 사용하고 `setup.py`의 build_py 단계에서 wheel에 복사한다. 원본 비교 fixture는 유지한다.
+- checkout·sdist 대화형 설치, sdist로부터 만든 wheel의 독립 실행·보조 스크립트 권한, 문서·예제·테스트 제외를 확인한다.

@@ -1,16 +1,5 @@
-include README.md
-include RELEASE-NOTES.md
-recursive-include docs *.md
-recursive-include examples *.toml
-recursive-include tests *.py
-
-include install.py ctfd-monitor.py
+include README.md pyproject.toml setup.py
+include install.py ctfd-monitor.py lab.py
 include 22.sh 25.sh
-
-recursive-include tests/fixtures *.sh
-
-recursive-include tests *.md
-
-include lab.py
 recursive-include lab *.py
-recursive-include tests/fixtures *.json
+prune .github
