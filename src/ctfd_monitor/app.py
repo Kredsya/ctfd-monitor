@@ -1349,6 +1349,23 @@ class Monitor:
         index = rows.index(own) + 1
         return f"#{own.get('pos') or index}"
 
+    def refresh_standings(self, team: dict[str, object]) -> None:
+        """Official totals remain readable when challenge access is closed."""
+        rows = self.fetch_scoreboard()
+        own = self.scoreboard_team(rows, team)
+        if own is None:
+            return  # A missing/private/failed board must not erase the last total.
+        score = own.get('total_score', own.get('score'))
+        if not isinstance(score, (int, float)) or not math.isfinite(score):
+            return
+        self.enrich_comparison_solves(rows, team)
+        with self.state.lock:
+            self.state.account_id = team.get('id')
+            self.state.team_name = str(team.get('name') or self.state.team_name)
+            self.state.score = float(score)
+            self.state.rank = self.fetch_rank(team, rows)
+            self.state.scoreboard = rows
+
     def refresh_contest_config(self, *, force: bool = False) -> None:
         if CONTEST_END:
             with self.state.lock:
@@ -1563,6 +1580,7 @@ class Monitor:
             self.add_event("ERROR", f"login: {error}")
         failures = 0
         while not self.stop.is_set():
+            team = {}
             try:
                 if not self.client.logged_in:
                     self.client.login()
@@ -1579,6 +1597,8 @@ class Monitor:
                 with self.state.lock:
                     self.state.status = "STALE"
                 if error.competition_unavailable:
+                    failures = 0  # A closed contest is not a network outage.
+                    self.refresh_standings(team)
                     with self.state.lock:
                         self.state.status = {'competition_not_started': 'PRE-START', 'competition_ended': 'ENDED'}.get(error.code, 'UNAVAILABLE')
                     self.add_event('ERROR', f'Challenge access unavailable: {error.code}. Keeping last saved data.', event_id=f'access:{error.code}')
@@ -1661,8 +1681,8 @@ def render_koth(view: dict[str, object], width: int) -> list[str]:
         rank_text = f"#{rank}/{teams}" if rank is not None and teams else "--/--"
         score = entry.get("score")
         points = entry.get("points")
-        score_text = f"{float(score):.2f}" if isinstance(score, (int, float)) else "--"
-        points_text = f"{float(points):.2f}" if isinstance(points, (int, float)) else "--"
+        score_text = f"{float(score):.0f}" if isinstance(score, (int, float)) else "--"
+        points_text = f"{float(points):.0f}" if isinstance(points, (int, float)) else "--"
         entry_maximum = float(KOTH_SOURCES.get(str(entry.get('id')), {}).get('max_points', KOTH_MAX_POINTS))
         ratio = max(0.0, min(1.0, float(points) / entry_maximum)) if isinstance(points, (int, float)) else 0.0
         state = ""
@@ -1670,20 +1690,20 @@ def render_koth(view: dict[str, object], width: int) -> list[str]:
             state = paint("  STALE", RED, bold=True) if points is not None else paint("  UNAVAILABLE", RED, bold=True)
         elif entry.get("status") != "LIVE":
             state = paint("  WAITING", YELLOW, bold=True)
-        formatted.append((name, score_text, rank_text, points_text, f'{entry_maximum:g}', state, ratio, entry.get('status')))
+        formatted.append((name, score_text, rank_text, points_text, f'{entry_maximum:.0f}', state, ratio, entry.get('status')))
     # Measure the whole panel once; every arena shares the same column widths.
     # Reserve the configured maximum's digits so point growth stays aligned.
-    score_width = max([10, *(len(row[1]) for row in formatted)])
+    score_width = max([7, *(len(row[1]) for row in formatted)])
     rank_width = max([5, *(len(row[2]) for row in formatted)])
-    points_width = max([7, *(len(row[3]) for row in formatted),
-                        *(len(f'{float(row[4]):.2f}') for row in formatted)])
+    points_width = max([4, *(len(row[3]) for row in formatted),
+                        *(len(f'{float(row[4]):.0f}') for row in formatted)])
     maximum_width = max([4, *(len(row[4]) for row in formatted)])
     state_width = max([0, *(display_width(row[5]) for row in formatted)])
     content_width = width - 4
-    fixed_width = score_width + rank_width + points_width + maximum_width + state_width + 25
+    fixed_width = score_width + rank_width + points_width + maximum_width + state_width + 20
     bar_width = max(0, min(20, content_width - fixed_width - 12))
     for name, score_text, rank_text, points_text, maximum_text, state, ratio, status in formatted:
-        score_label = f"KOTH {score_text:>{score_width}}  Rank {rank_text:>{rank_width}}"
+        score_label = f"{score_text:>{score_width}}  Rank {rank_text:>{rank_width}}"
         points_label = f"{points_text:>{points_width}} / {maximum_text:>{maximum_width}} pt"
         filled = round(bar_width * ratio)
         bar_color = GREEN if status == "LIVE" else YELLOW
@@ -1697,7 +1717,7 @@ def render_koth(view: dict[str, object], width: int) -> list[str]:
             lines.extend([truncate(name, content_width), score_label + state, points_label])
     if not lines:
         lines = [paint("WAITING", YELLOW, bold=True)]
-    title = f"KOTH · {len(entries)} ARENAS · {total:.2f} / {maximum:.0f} pt"
+    title = f"KOTH · {len(entries)} ARENAS · {total:.0f} / {maximum:.0f} pt"
     return boxed(title, lines, width, CYAN)
 
 
@@ -1947,20 +1967,28 @@ def resource_chart(title: str, current: float, peak: float | None, values: list[
     suffix = f"   {detail}" if detail else ""
     peak_text = f'{peak:>5.1f}%' if peak is not None else '    --'
     lines = [f"{title:<8}{current:>5.1f}%   Peak {peak_text}{suffix}"]
+    # Each tick is at its terminal cell's centre: the 40% cell spans
+    # 30..50%, so 40% is half a block and 50% fills that cell.
     for row in range(height):
-        row_base = (height - row - 1) * 8
+        threshold = 100 - row * 20
         cells: list[str] = []
         for value in values:
             if value is None:
                 cells.append(" ")
                 continue
-            units = round(max(0.0, min(100.0, value)) * height * 8 / 100)
-            if value > 0:
-                units = max(1, units)
-            cells.append(PARTIAL_BLOCKS[max(0, min(8, units - row_base))])
-        threshold = 100 - row * 20
+            value = max(0.0, min(100.0, value))
+            units = round((value - (threshold - 10)) * 8 / 20)
+            cells.append(PARTIAL_BLOCKS[max(0, min(8, units))])
         lines.append(f"{threshold:>3}% ┤" + paint("".join(cells), color))
-    lines.append("  0% └" + "▔" * plot_width)
+    # The zero axis also runs through the cell centre. Only its upper half
+    # may be filled; ordinary lower-block glyphs would extend below zero.
+    baseline = []
+    for value in values:
+        if value is None or value <= 0:
+            baseline.append(paint("─", GRAY))
+        else:
+            baseline.append(paint("⠒" if value < 7.5 else "▀", color))
+    lines.append("  0% └" + "".join(baseline))
     left_label, right_label = "2m ago", "now"
     lines.append("      " + left_label + " " * max(1, plot_width - len(left_label) - len(right_label)) + right_label)
     return [pad(truncate(line, width), width) for line in lines]
@@ -2031,7 +2059,7 @@ def render_koth_compact(view: dict[str, object], width: int) -> list[str]:
     entries = [entry for entry in view.get("koth", {}).values() if isinstance(entry, dict)]
     total = sum(float(entry["points"]) for entry in entries if isinstance(entry.get("points"), (int, float)))
     maximum = sum(float(KOTH_SOURCES.get(str(entry.get('id')), {}).get('max_points', KOTH_MAX_POINTS)) for entry in entries)
-    return boxed(f"KOTH · {len(entries)} ARENAS · {total:.2f} / {maximum:.0f} pt · COMPACT", [""], width, CYAN)
+    return boxed(f"KOTH · {len(entries)} ARENAS · {total:.0f} / {maximum:.0f} pt · COMPACT", [""], width, CYAN)
 
 
 def render_screen(view: dict[str, object], resources: dict[str, object] | None = None) -> str:

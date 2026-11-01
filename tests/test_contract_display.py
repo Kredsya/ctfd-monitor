@@ -46,7 +46,7 @@ class DisplayContracts(Scenario):
     def test_koth_waiting_live_stale_and_unavailable(self):
         entries=[{'id':1,'name':'Working','status':'LIVE','rank':1,'teams':4,'score':100,'points':1500},{'id':2,'name':'Old data','status':'ERROR','points':750},{'id':3,'name':'No data','status':'ERROR'},{'id':4,'name':'Pending','status':'WAITING'}]
         text=plain(m.render_koth({'koth':{str(x['id']):x for x in entries}},160))
-        for expected in ('Working','STALE','UNAVAILABLE','WAITING','2250.00'): self.assertIn(expected,text)
+        for expected in ('Working','STALE','UNAVAILABLE','WAITING','2250'): self.assertIn(expected,text)
 
     def test_comparison_handles_standard_ctfd_scoreboard(self):
         view=self.monitor.state.view()

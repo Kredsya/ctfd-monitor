@@ -83,14 +83,12 @@ helpers = []
             values=m.resource_series(resources,1,width)
             self.assertNotIn(99,values)
 
-    def test_zero_axis_touches_bottom_row_and_own_team_has_blue_background(self):
+    def test_zero_axis_uses_upper_half_and_own_team_has_blue_background(self):
         for percent in (0,1,20,50,90.5,100):
             chart=m.resource_chart('CPU',percent,percent,[percent]*20,26,m.YELLOW)
             plain=[m.ANSI_RE.sub('',line) for line in chart]
-            self.assertTrue(plain[-2].startswith('  0% └▔'))
-            self.assertEqual(plain[-2][6:].strip(),'▔'*20)
-            if percent:
-                self.assertTrue(any(c in plain[-3][6:] for c in '▁▂▃▄▅▆▇█'))
+            self.assertTrue(plain[-2].startswith('  0% └'))
+            self.assertEqual(plain[-2][6:].strip(),('─' if percent==0 else '⠒' if percent<7.5 else '▀')*20)
         view=self.monitor.state.view()
         view.update(team_name='Ours',account_id=7,scoreboard=[{'account_id':1,'name':'Other','score':100,'pos':1,'solved_challenge_ids':[]},{'account_id':7,'name':'Ours','score':50,'pos':2,'solved_challenge_ids':[1]}],challenges={'1':self.challenge(solved_by_me=True)})
         rows=m.render_team_comparison(view,140)

@@ -121,6 +121,15 @@ def smoke(lab):
         eventually(lambda: state('token').get('status')=='LIVE')
         lab.set_time('end'); raw_closed('after')
         eventually(lambda: state('token').get('status')=='ENDED')
+        # KOTH awards can change while the challenges endpoint remains closed.
+        # The header must follow the official combined total without adding it twice.
+        own=next(t for t in lab.status['teams'] if t['name']=='Our team')
+        previous=state('token')['score']
+        lab.koth('set',team=own['id'],score=0 if any(a['value'] for a in lab.status['awards'] if a['team_id']==own['id']) else 100000)
+        board=lab.client().request_json('/api/v1/scoreboard')['data']
+        expected=next(row['score'] for row in board if row['account_id']==own['id'])
+        assert expected != previous
+        eventually(lambda: state('token').get('status')=='ENDED' and state('token').get('score')==expected)
         assert len(file('token','current.json')['challenges'])==15
         before=json.loads((lab.directory/'credentials.json').read_text())
         for p,out in processes: p.send_signal(signal.SIGINT); p.wait(timeout=40); out.close()

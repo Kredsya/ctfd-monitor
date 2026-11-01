@@ -24,8 +24,8 @@ class UIPreservationTests(Scenario):
                         else:
                             self.assertIsNone(peak)
                     if now<300:
-                        # A 90.5% CPU spike must occupy the 80–100% top row.
-                        top=m.ANSI_RE.sub('',lines[2]).split('100% ┤',2)[1]
+                        # The 80% cell spans 70–90%; a 90.5% spike fills it.
+                        top=m.ANSI_RE.sub('',lines[3]).split('80% ┤',2)[1]
                         self.assertTrue(any(c in top for c in '▁▂▃▄▅▆▇█'))
 
     def test_codex_detected_usage_is_visible_without_profile_toggle(self):
@@ -140,8 +140,8 @@ class UIPreservationTests(Scenario):
             with self.subTest(width=width),patch.object(m,'KOTH_SOURCES',sources):
                 lines=m.render_koth(view,width)
                 text=m.ANSI_RE.sub('','\n'.join(lines))
-                self.assertEqual(text.count('KOTH 1234567.89'),3)
-                self.assertEqual(text.count('1234.56 / 1500 pt'),3)
+                self.assertEqual(text.count('1234568'),3)
+                self.assertEqual(text.count('1235 / 1500 pt'),3)
                 self.assertNotIn('PROJECTED',text)
                 self.assertTrue(all(m.display_width(line)<=width for line in lines))
                 comparison=m.render_team_comparison(view,width)
@@ -166,7 +166,7 @@ class UIPreservationTests(Scenario):
                 lines=m.render_koth({'koth':entries},width)
                 rows=[m.ANSI_RE.sub('',line) for line in lines[1:-1]]
                 self.assertEqual(len(rows),len(entries))
-                for token in ('KOTH ', 'Rank ', ' / ', ' pt'):
+                for token in ('Rank ', ' / ', ' pt'):
                     columns=[m.display_width(row[:row.index(token)]) for row in rows]
                     self.assertEqual(len(set(columns)),1,(token,columns))
                 bars=[re.search('[█░]+',row) for row in rows]
@@ -176,5 +176,5 @@ class UIPreservationTests(Scenario):
                 for row,entry in zip(rows,entries.values()):
                     self.assertIn(entry['name'],row)
                     if entry['points'] is not None:
-                        self.assertIn(f"{entry['points']:.2f} /",row)
+                        self.assertIn(f"{entry['points']:.0f} /",row)
                 self.assertTrue(all(m.display_width(line)<=width for line in lines))
