@@ -30,8 +30,7 @@ def main():
         with tempfile.TemporaryDirectory(prefix='ctfd-mutant-') as d:
             source=Path(d)/'src'
             shutil.copytree(ROOT/'src',source,ignore=shutil.ignore_patterns('__pycache__','*.egg-info'))
-            for helper in ('22.sh', '25.sh'):
-                shutil.copy2(ROOT/helper, source.parent/helper)
+            shutil.copytree(ROOT/'helpers', source.parent/'helpers')
             file=source/'ctfd_monitor'/filename
             text=file.read_text()
             if before not in text: raise RuntimeError(f'Mutation target changed: {name}')

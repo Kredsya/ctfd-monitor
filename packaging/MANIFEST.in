@@ -1,5 +1,5 @@
 include README.md pyproject.toml setup.py
 include install.py ctfd-monitor.py lab.py
-include 22.sh 25.sh
+include helpers/22.sh helpers/25.sh
 recursive-include lab *.py
 prune .github

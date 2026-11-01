@@ -16,8 +16,9 @@ class SetupContracts(unittest.TestCase):
         self.temp=tempfile.TemporaryDirectory(); self.addCleanup(self.temp.cleanup)
         self.root=Path(self.temp.name)
         repo=Path(__file__).resolve().parents[2]
+        (self.root/'helpers').mkdir()
         for name in ('22.sh','25.sh'):
-            shutil.copy2(repo/name,self.root/name)
+            shutil.copy2(repo/'helpers'/name,self.root/'helpers'/name)
 
     def test_url_matrix(self):
         for given,want in [('ctf.example','https://ctf.example'),('https://ctf.example/','https://ctf.example'),('https://ctf.example/sub/','https://ctf.example/sub'),('http://127.0.0.1:8000','http://127.0.0.1:8000')]:
@@ -72,7 +73,7 @@ class SetupContracts(unittest.TestCase):
         self.assertIn('competition.toml',writes, 'The failure must actually reach the commit step')
 
     def test_setup_must_not_report_success_with_missing_required_assets(self):
-        for name in ('22.sh','25.sh'): (self.root/name).unlink()
+        for name in ('22.sh','25.sh'): (self.root/'helpers'/name).unlink()
         output=io.StringIO()
         with patch('builtins.input',side_effect=['https://ctf.example','1']), patch('getpass.getpass',return_value='fixture-secret'), patch.object(installer,'verify',return_value=({'id':1},'ok')), contextlib.redirect_stdout(output):
             self.assertNotEqual(installer.main(self.root),0,'A checkout with neither helper is incomplete')

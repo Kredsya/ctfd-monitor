@@ -120,7 +120,8 @@ class SetupReleaseContracts(unittest.TestCase):
     def test_old_secret_cleanup_failure_does_not_claim_committed_setup_failed(self):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory)
-            for name in ('22.sh','25.sh'): shutil.copy2(REPO/name,root/name)
+            (root/'helpers').mkdir()
+            for name in ('22.sh','25.sh'): shutil.copy2(REPO/'helpers'/name,root/'helpers'/name)
             local=root/'.ctfd-monitor-local'; local.mkdir()
             old=local/'credentials-old.json'; old.write_text('old secret')
             unlink=Path.unlink
@@ -141,8 +142,9 @@ class SetupReleaseContracts(unittest.TestCase):
             for damage in ('missing','empty','not executable'):
                 with self.subTest(name=name,damage=damage),tempfile.TemporaryDirectory() as directory:
                     root=Path(directory)
-                    for helper in ('22.sh','25.sh'): shutil.copy2(REPO/helper,root/helper)
-                    broken=root/name
+                    (root/'helpers').mkdir()
+                    for helper in ('22.sh','25.sh'): shutil.copy2(REPO/'helpers'/helper,root/'helpers'/helper)
+                    broken=root/'helpers'/name
                     if damage=='missing': broken.unlink()
                     elif damage=='empty': broken.write_bytes(b'')
                     else: broken.chmod(0o600)

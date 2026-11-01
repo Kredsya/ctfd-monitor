@@ -38,27 +38,31 @@ finally:
             self.assertTrue((problem/'chall/AGENTS.md').is_file())
             self.assertIn('supplied description',(problem/'chall/README.md').read_text())
             for name in ('22.sh','25.sh'):
-                self.assertEqual((problem/name).read_bytes(),(REPO/name).read_bytes())
+                self.assertEqual((problem/name).read_bytes(),(REPO/'helpers'/name).read_bytes())
                 self.assertTrue(os.access(problem/name,os.X_OK))
 
     def test_git_ignores_secrets_but_tracks_helpers(self):
         ignored=subprocess.run(['git','check-ignore','.ctfd-monitor-local/credentials-test.json'],cwd=REPO,capture_output=True,text=True)
         self.assertEqual(ignored.returncode,0)
-        tracked=subprocess.check_output(['git','ls-files','22.sh','25.sh'],cwd=REPO,text=True).splitlines()
-        self.assertEqual(set(tracked),{'22.sh','25.sh'})
+        tracked=subprocess.check_output(['git','ls-files','helpers/22.sh','helpers/25.sh'],cwd=REPO,text=True).splitlines()
+        self.assertEqual(set(tracked),{'helpers/22.sh','helpers/25.sh'})
+        for name in ('22.sh', '25.sh', 'MANIFEST.in', 'pyproject.toml', 'setup.py'):
+            self.assertFalse((REPO/name).exists(), f'{name} must not clutter the checkout root')
+        self.assertFalse((REPO/'src/ctfd_monitor.egg-info').exists())
+        self.assertFalse((REPO/'build').exists())
 
     def test_sdist_contains_launcher_installer_and_required_helpers(self):
         archives=sorted((REPO/'dist').glob('ctfd_monitor-*.tar.gz'),key=lambda p:p.stat().st_mtime)
-        self.assertTrue(archives,'Run python -m build before the distribution gate')
+        self.assertTrue(archives,'Run python packaging/build.py before the distribution gate')
         with tarfile.open(archives[-1]) as archive:
             members=archive.getmembers()
             names={'/'.join(m.name.split('/')[1:]):m for m in members}
-            for name in ('install.py','ctfd-monitor.py','22.sh','25.sh','lab.py','lab/__init__.py','lab/control.py','lab/smoke.py','setup.py','README.md'):
+            for name in ('install.py','ctfd-monitor.py','helpers/22.sh','helpers/25.sh','lab.py','lab/__init__.py','lab/control.py','lab/smoke.py','setup.py','README.md'):
                 with self.subTest(name=name):
                     self.assertIn(name,names)
                     if name.endswith('.sh'):
                         self.assertTrue(names[name].mode & 0o111)
-                        self.assertEqual(archive.extractfile(names[name]).read(),(REPO/'.github/tests/fixtures/original'/name).read_bytes())
+                        self.assertEqual(archive.extractfile(names[name]).read(),(REPO/'.github/tests/fixtures/original'/Path(name).name).read_bytes())
             self.assertFalse(any('.ctfd-monitor-local/' in name or '.ctfd-lab/' in name or name.endswith(('.env','.db')) for name in names))
             self.assertFalse(any(name.startswith(('docs/', 'examples/', 'tests/', '.github/')) or name == 'RELEASE-NOTES.md' for name in names))
             for helper in ('22.sh', '25.sh'):
@@ -66,7 +70,7 @@ finally:
 
     def test_wheel_contains_runtime_helpers_and_no_local_secrets(self):
         wheels=sorted((REPO/'dist').glob('ctfd_monitor-*.whl'),key=lambda p:p.stat().st_mtime)
-        self.assertTrue(wheels,'Run python -m build before the distribution gate')
+        self.assertTrue(wheels,'Run python packaging/build.py before the distribution gate')
         with zipfile.ZipFile(wheels[-1]) as wheel:
             names=wheel.namelist()
             for filename in ('22.sh','25.sh'):

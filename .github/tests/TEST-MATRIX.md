@@ -1,6 +1,6 @@
 # 전체 회귀 검증 기준
 
-감사 기준 구현: v0.2.0 (`3246754`), 현재 제품: v0.3.9. 감사에서 드러낸 계약을 유지하며 제품을 수정한다. 실패를 expectedFailure/skip으로 숨기지 않으며 통과 개수와 제품 완성도를 동일시하지 않는다. 수정 전 실패 목록은 [BASELINE.md](BASELINE.md)에 보존한다.
+감사 기준 구현: v0.2.0 (`3246754`), 현재 제품: v0.3.10. 감사에서 드러낸 계약을 유지하며 제품을 수정한다. 실패를 expectedFailure/skip으로 숨기지 않으며 통과 개수와 제품 완성도를 동일시하지 않는다. 수정 전 실패 목록은 [BASELINE.md](BASELINE.md)에 보존한다.
 
 ## 판정 근거
 
@@ -47,7 +47,7 @@
 개발 환경에 tmux, build, coverage가 필요하다. 모니터 사용자의 설치 의존성과는 별개다.
 
 ```sh
-python -m build
+python packaging/build.py
 python -m coverage run --branch --source=ctfd_monitor .github/tests/run_suite.py
 python .github/tests/mutation_smoke.py
 python -m coverage report -m
@@ -114,3 +114,9 @@ PYTHONPATH=src python3 .github/tests/stock_ctfd_smoke.py  # Docker 필요
 - 테스트·fixture는 `.github/tests/`에서 실행하며 사용자용 배포 파일에서는 제외한다.
 - 루트 보조 스크립트를 유일한 배포 원본으로 사용하고 `setup.py`의 build_py 단계에서 wheel에 복사한다. 원본 비교 fixture는 유지한다.
 - checkout·sdist 대화형 설치, sdist로부터 만든 wheel의 독립 실행·보조 스크립트 권한, 문서·예제·테스트 제외를 확인한다.
+
+## v0.3.10 루트 정리
+
+- 배포할 보조 스크립트는 `helpers/`, 빌드 설정·실행기는 `packaging/`에서 관리한다.
+- clone·sdist 설치는 `helpers/`를 검증하며 문제 폴더에 복사하는 파일명은 그대로 유지한다.
+- 빌드는 임시 디렉토리에서 수행하고 wheel·sdist만 지정한 출력 폴더에 남긴다.

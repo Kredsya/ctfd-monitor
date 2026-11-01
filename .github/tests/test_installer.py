@@ -107,7 +107,8 @@ class InstallerTests(unittest.TestCase):
                     root=next(root.glob('ctfd_monitor-*'))
                 else:
                     shutil.copytree(REPO / 'src', root / 'src', ignore=shutil.ignore_patterns('__pycache__', '*.egg-info'))
-                    for name in ('install.py', 'ctfd-monitor.py', '22.sh', '25.sh'):
+                    shutil.copytree(REPO / 'helpers', root / 'helpers')
+                    for name in ('install.py', 'ctfd-monitor.py'):
                         if (REPO / name).is_file():
                             shutil.copy2(REPO / name, root / name)
                 env = {k:v for k,v in os.environ.items() if not k.startswith('CTFD_MONITOR_') and k != 'PYTHONPATH'}

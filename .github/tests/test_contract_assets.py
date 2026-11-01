@@ -10,7 +10,7 @@ class AssetContracts(Scenario):
     def test_checkout_contains_current_user_scripts(self):
         for name in ('22.sh', '25.sh'):
             with self.subTest(name=name):
-                actual = REPO / name
+                actual = REPO / 'helpers' / name
                 self.assertTrue(actual.is_file(), f'{name} must ship in a fresh clone')
                 self.assertEqual(actual.read_bytes(), (REPO / '.github/tests/fixtures/original' / name).read_bytes())
                 self.assertTrue(os.access(actual, os.X_OK))

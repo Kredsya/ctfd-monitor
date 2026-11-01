@@ -12,7 +12,7 @@ class BuildPy(build_py):
         destination = Path(self.build_lib) / 'ctfd_monitor'
         destination.mkdir(parents=True, exist_ok=True)
         for name in ('22.sh', '25.sh'):
-            shutil.copy2(Path(__file__).parent / name, destination / name)
+            shutil.copy2(Path(__file__).parent / 'helpers' / name, destination / name)
 
     def get_outputs(self, include_bytecode=1):
         return super().get_outputs(include_bytecode) + [

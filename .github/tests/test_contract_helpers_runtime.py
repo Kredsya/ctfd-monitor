@@ -24,7 +24,7 @@ class HelperRuntimeContracts(unittest.TestCase):
                 chall=problem/'chall'; (chall/'deploy').mkdir(parents=True)
                 (chall/'AGENTS.md').write_text('reference instructions')
                 (chall/'deploy/data').write_text('provided')
-                script=problem/name; shutil.copy2(REPO/name,script)
+                script=problem/name; shutil.copy2(REPO/'helpers'/name,script)
                 binaries=root/'bin'; binaries.mkdir()
                 wrapper=binaries/'tmux'
                 wrapper.write_text('#!/usr/bin/env python3\nimport os,sys\na=["-f","/dev/null"]+sys.argv[1:]\nif "attach-session" in a: sys.exit(0)\nos.execv('+repr(tmux)+', ['+repr(tmux)+']+a)\n')
