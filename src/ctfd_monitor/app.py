@@ -6,6 +6,8 @@ from __future__ import annotations
 from .archives import extract
 from .config import load_profile, load_credentials
 from .client import ApiError, CTFdClient, SafeRedirect
+from .assets import REQUIRED_HELPERS, DEFAULT_AGENTS, find_helpers
+from . import __version__
 
 import argparse
 import concurrent.futures
@@ -77,14 +79,14 @@ KOTH_FILE = STATE_DIR / "koth.json"
 CODEX_USAGE_FILE = STATE_DIR / "codex-usage.json"
 LOCK_FILE = STATE_DIR / "monitor.lock"
 STAGING_DIR = STATE_DIR / "staging"
-HELPER_FILES = ()
+HELPER_FILES = REQUIRED_HELPERS
 KOTH_POLL_INTERVAL = 2.0 if TEST_MODE else 10.0
 KOTH_MAX_POINTS = 1500.0
 CODEX_USAGE_POLL_INTERVAL = 10.0 if TEST_MODE else 12.0
 SOLVE_POLL_INTERVAL = 2.0 if TEST_MODE else 10.0
 CONFIG_POLL_INTERVAL = 10.0 if TEST_MODE else 60.0
-MIN_TERMINAL_COLUMNS = 109
-MIN_TERMINAL_ROWS = 54
+MIN_TERMINAL_COLUMNS = 32
+MIN_TERMINAL_ROWS = 8
 
 ESC = "\033["
 RESET = f"{ESC}0m"
@@ -99,7 +101,14 @@ WHITE = f"{ESC}38;5;255m"
 GREEN_BG = f"{ESC}48;5;22m"
 RED_BG = f"{ESC}48;5;88m"
 ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+TERMINAL_ESCAPE_RE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\|$)|[PX^_].*?(?:\x1b\\|$)|.|$)", re.DOTALL)
 PARTIAL_BLOCKS = " ▁▂▃▄▅▆▇█"
+
+
+def terminal_text(text: str) -> str:
+    """Keep styling, discard cursor/clipboard/control commands from remote text."""
+    text = TERMINAL_ESCAPE_RE.sub(lambda match: match[0] if re.fullmatch(r'\x1b\[[0-9;]*m', match[0]) else '', text)
+    return ''.join(char for char in text if char == '\x1b' or (ord(char) >= 32 and not 127 <= ord(char) < 160))
 
 
 class DescriptionParser(HTMLParser):
@@ -190,7 +199,9 @@ def description_text(value: object) -> str:
 
 def safe_directory_name(value: object) -> str:
     name = re.sub(r"\s+", "_", str(value).strip())
-    name = re.sub(r"[/\x00-\x1f\x7f]", "_", name)
+    # Helpers send a quoted cd command to worker shells. Do not let remote
+    # titles introduce shell substitutions or terminate those quotes.
+    name = re.sub(r'[/\\"$`\x00-\x1f\x7f]', "_", name)
     if name in {"", ".", ".."}:
         name = "unnamed_challenge"
     encoded = name.encode("utf-8")
@@ -378,7 +389,7 @@ class ResourceSampler:
 class SharedState:
     def __init__(self) -> None:
         self.lock = threading.RLock()
-        self.status = "PRE-START"
+        self.status = "CONNECTING"
         self.team_name = "-"
         self.score = 0
         self.rank = "-"
@@ -491,7 +502,7 @@ class Monitor:
             }
         with self.state.lock:
             if isinstance(challenges, dict) and challenges:
-                self.state.status = "LIVE"
+                self.state.status = "STALE"
                 self.state.challenges = copy.deepcopy(challenges)
             if isinstance(team, dict):
                 self.state.team_name = str(team.get("name") or USERNAME)
@@ -794,15 +805,7 @@ class Monitor:
 
     @staticmethod
     def find_helpers() -> dict[str, Path]:
-        helpers: dict[str, Path] = {}
-        for name in HELPER_FILES:
-            for candidate in (BASE_DIR / name, SCRIPT_DIR / name, Path.home() / name):
-                if candidate.is_file():
-                    helpers[name] = candidate
-                    break
-            if name not in helpers:
-                raise FileNotFoundError(f"{name} not found in {BASE_DIR} or {Path.home()}")
-        return helpers
+        return find_helpers(HELPER_FILES, BASE_DIR, SCRIPT_DIR)
 
     def load_events(self) -> None:
         events: list[dict[str, object]] = []
@@ -851,17 +854,19 @@ class Monitor:
 
     def normalize_files(self, files: object) -> list[dict[str, str]]:
         output: list[dict[str, str]] = []
-        used: dict[str, int] = {}
+        used: set[str] = set()
         for index, entry in enumerate(files if isinstance(files, list) else [], start=1):
             url = file_url(entry)
             if not url:
                 continue
             path = urllib.parse.unquote(urllib.parse.urlparse(url).path)
             name = safe_file_name(path, f"attachment_{index}")
-            used[name] = used.get(name, 0) + 1
             local_name = name
-            if used[name] > 1:
-                local_name = f"{Path(name).stem}_{used[name]}{Path(name).suffix}"
+            suffix = 2
+            while local_name in used:
+                local_name = f"{Path(name).stem}_{suffix}{Path(name).suffix}"
+                suffix += 1
+            used.add(local_name)
             output.append({"url": url, "path": path, "name": name, "local_name": local_name})
         return output
 
@@ -899,12 +904,18 @@ class Monitor:
         deploy_dir = chall_dir / "deploy"
         deploy_dir.mkdir(parents=True, exist_ok=True)
         for name, source in self.helpers.items():
-            shutil.copy2(source, challenge_dir / name)
+            destination = challenge_dir / name
+            if not destination.is_file() or destination.read_bytes() != source.read_bytes():
+                self.archive_existing(int(challenge['id']), destination)
+                shutil.copy2(source, destination)
+            destination.chmod(destination.stat().st_mode | 0o100)
         description = f"# {challenge['name']}\n\n{challenge['description']}\n"
         (chall_dir / "README.md").write_text(description, encoding="utf-8")
         agents_path = chall_dir / "AGENTS.md"
-        if AGENTS_TEMPLATE and not agents_path.exists():
-            agents_path.write_text(AGENTS_TEMPLATE.read_text(encoding="utf-8"), encoding="utf-8")
+        if not agents_path.exists():
+            instructions = AGENTS_TEMPLATE.read_text(encoding="utf-8") if AGENTS_TEMPLATE else DEFAULT_AGENTS
+            instructions += f"\nLatest problem description: {chall_dir / 'README.md'}\n"
+            agents_path.write_text(instructions, encoding="utf-8")
         return deploy_dir
 
     def archive_existing(self, challenge_id: int, destination: Path) -> None:
@@ -1071,12 +1082,57 @@ class Monitor:
         self.state.add_job(job)
         transaction = STAGING_DIR / job.job_id
         payload = transaction / "payload"
-        payload.mkdir(parents=True, exist_ok=True)
+        manifest_key = self.manifest_key(int(challenge['id']), file_info['local_name'])
+
+        def record_failure(message: str) -> None:
+            with self.manifest_lock:
+                entry = self.manifest.get(manifest_key)
+                if isinstance(entry, dict):
+                    previous = entry.get('extraction')
+                    entry['extraction'] = {
+                        'status': 'error', 'error': message,
+                        'paths': previous.get('paths', []) if isinstance(previous, dict) else [],
+                    }
+                    try:
+                        atomic_json(MANIFEST_FILE, self.manifest)
+                    except OSError:
+                        pass  # Job/event still reports failure if the disk is unavailable.
         try:
+            payload.mkdir(parents=True, exist_ok=True)
+            with self.manifest_lock:
+                entry = self.manifest.get(manifest_key)
+                if not isinstance(entry, dict):
+                    raise RuntimeError('archive manifest entry disappeared')
+                previous = entry.get('extraction')
+                entry['extraction'] = {'status': 'pending', 'paths': previous.get('paths', []) if isinstance(previous, dict) else []}
+                atomic_json(MANIFEST_FILE, self.manifest)
             extract(archive, payload, MAX_DOWNLOAD_BYTES, self.stop.is_set)
             paths: list[str] = []
             deploy_root = deploy_dir.resolve()
-            for source in sorted(payload.rglob("*")):
+            sources = [source for source in sorted(payload.rglob("*")) if source.is_file()]
+            # Validate the entire publication plan before replacing any file.
+            protected = {archive.resolve()} | {
+                (deploy_dir / str(item['local_name'])).resolve()
+                for item in challenge.get('files', []) if isinstance(item, dict) and 'local_name' in item
+            }
+            for source in sources:
+                destination = deploy_dir / source.relative_to(payload)
+                for part in (destination, *destination.parents):
+                    if part.is_symlink():
+                        raise ValueError('extraction destination contains a symbolic link')
+                    if part == deploy_dir:
+                        break
+                resolved = destination.resolve()
+                if not resolved.is_relative_to(deploy_root) or resolved in protected:
+                    raise ValueError('extraction would escape deploy or overwrite an attachment')
+                if destination.exists() and not destination.is_file():
+                    raise ValueError('extraction destination is not a regular file')
+                for parent in destination.parents:
+                    if parent == deploy_dir:
+                        break
+                    if parent.exists() and not parent.is_dir():
+                        raise ValueError('extraction parent is not a directory')
+            for source in sources:
                 if not source.is_file():
                     continue
                 if self.stop.is_set():
@@ -1084,7 +1140,7 @@ class Monitor:
                 relative = source.relative_to(payload)
                 destination = (deploy_dir / relative).resolve()
                 if not destination.is_relative_to(deploy_root):
-                    continue
+                    raise ValueError('extraction destination escaped deploy')
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 if destination.exists():
                     self.archive_existing(int(challenge["id"]), destination)
@@ -1099,7 +1155,6 @@ class Monitor:
             if self.stop.is_set():
                 raise DownloadCancelled("extraction cancelled")
 
-            manifest_key = self.manifest_key(int(challenge["id"]), file_info["local_name"])
             with self.manifest_lock:
                 entry = self.manifest.get(manifest_key)
                 if not isinstance(entry, dict):
@@ -1122,8 +1177,10 @@ class Monitor:
                 atomic_json(MANIFEST_FILE, self.manifest)
             self.state.finish_job(job)
         except DownloadCancelled:
+            record_failure('cancelled')
             self.state.finish_job(job, error="cancelled")
         except Exception as error:
+            record_failure(str(error))
             self.state.finish_job(job, error=str(error))
             self.add_event("ERROR", f"extract {challenge['name']} / {archive.name}: {error}")
         finally:
@@ -1359,6 +1416,7 @@ class Monitor:
         if changed_any:
             SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
             atomic_json(SNAPSHOT_DIR / f"{timestamp_name()}.json", raw)
+        if current != self.previous or not CURRENT_FILE.exists():
             atomic_json(CURRENT_FILE, current)
         self.previous = copy.deepcopy(current)
 
@@ -1392,12 +1450,10 @@ class Monitor:
                 failures += 1
                 with self.state.lock:
                     self.state.status = "STALE"
-                if error.status in {401, 403} and (error.code == "competition_closed" or "대회 시간" in error.message or "not started" in error.message.lower() or "started" in error.message.lower()):
+                if error.competition_unavailable:
                     with self.state.lock:
-                        self.state.status = "PRE-START"
-                        self.state.challenges = {}
-                        self.state.score = 0
-                        self.state.rank = "-"
+                        self.state.status = {'competition_not_started': 'PRE-START', 'competition_ended': 'ENDED'}.get(error.code, 'UNAVAILABLE')
+                    self.add_event('ERROR', f'Challenge access unavailable: {error.code}. Keeping last saved data.', event_id=f'access:{error.code}')
                 elif error.status == 401:
                     self.client.logged_in = False
                 else:
@@ -1536,6 +1592,13 @@ def render_team_comparison(view: dict[str, object], width: int) -> list[str]:
     opponents = sorted((row for row in rows if row is not own), key=lambda row: (comparison_position(row, len(rows) + 1), str(row.get("name") or "").casefold()))[:4]
     if not opponents:
         return boxed("TEAM COMPARISON · TOP 4 OPPONENTS", [paint("NO OPPONENTS", YELLOW, bold=True)], width, BLUE)
+    if not KOTH_ENABLED:
+        own_total = float(own.get('total_score', own.get('score', 0)) or 0)
+        lines = [f"{'RANK':<6}{'ACCOUNT':<24}{'SCORE':>10}{'DELTA':>10}"]
+        for row in [*opponents, own]:
+            score = float(row.get('total_score', row.get('score', 0)) or 0)
+            lines.append(f"#{comparison_position(row, len(rows) + 1):<5}{pad(truncate(str(row.get('name') or '-'), 24), 24)}{score:>10g}{score - own_total:>+10g}")
+        return boxed(f"SCORE COMPARISON · OUR ACTUAL #{own_rank}", lines, width, BLUE)
     challenges = sorted(
         (
             (int(challenge.get("id") or key), str(challenge.get("name") or f"Challenge {key}"))
@@ -1545,7 +1608,7 @@ def render_team_comparison(view: dict[str, object], width: int) -> list[str]:
         key=lambda item: item[0],
     )
     own_solved = {int(value) for value in own.get("solved_challenge_ids", []) if str(value).isdigit()}
-    own_total = float(own.get("total_score") or 0)
+    own_total = float(own.get("total_score", own.get("score", 0)) or 0)
     own_koth = own.get("koth_score_detail") if isinstance(own.get("koth_score_detail"), dict) else {}
     koth_names = ["King of the Brick-Breaker", "Neural Dominion", "SHIFT", "BATTLE"]
     solved_by_opponent = [
@@ -1560,7 +1623,7 @@ def render_team_comparison(view: dict[str, object], width: int) -> list[str]:
 
     left_lines = [f"{'RK TEAM':<16}{'ΔPT':>8} {'BRK':^5}{'NEU':^5}{'SHF':^5}{'BAT':^5}", paint("─" * 45, GRAY)]
     for opponent in opponents:
-        prefix = f"#{comparison_position(opponent, len(rows) + 1):<2} {pad(truncate(str(opponent.get('name') or 'Team'), 12), 12)} {float(opponent.get('total_score') or 0) - own_total:+7.0f} "
+        prefix = f"#{comparison_position(opponent, len(rows) + 1):<2} {pad(truncate(str(opponent.get('name') or 'Team'), 12), 12)} {float(opponent.get('total_score', opponent.get('score', 0)) or 0) - own_total:+7.0f} "
         opponent_koth = opponent.get("koth_score_detail") if isinstance(opponent.get("koth_score_detail"), dict) else {}
         koth = "".join(comparison_delta_cell(float(opponent_koth.get(name) or 0) - float(own_koth.get(name) or 0)) for name in koth_names)
         left_lines.append(prefix + koth)
@@ -1591,6 +1654,8 @@ def competition_countdown(view: dict[str, object]) -> tuple[str, str]:
         return "WAITING", YELLOW
     try:
         end = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if end.tzinfo is None:
+            return "UNAVAILABLE", RED
         remaining = max(0, math.ceil((end - datetime.now(timezone.utc)).total_seconds()))
     except ValueError:
         return "UNAVAILABLE", RED
@@ -1775,10 +1840,10 @@ def render_koth_compact(view: dict[str, object], width: int) -> list[str]:
 def render_screen(view: dict[str, object], resources: dict[str, object] | None = None) -> str:
     terminal = shutil.get_terminal_size((120, 40))
     width = max(32, min(terminal.columns, 220))
-    height = max(8, terminal.lines)
+    height = max(1, terminal.lines)
     left_width = (width - 2) // 2
     right_width = width - 2 - left_width
-    status_color = YELLOW if view["status"] == "PRE-START" else RED if view["status"] == "ENDED" else GREEN
+    status_color = GREEN if view['status'] == 'LIVE' else YELLOW if view['status'] == 'PRE-START' else RED
     challenges = {key: challenge for key, challenge in view["challenges"].items() if not KOTH_ENABLED or not is_koth_challenge(challenge)}
     solved = sum(bool(challenge.get("solved")) for challenge in challenges.values())
     try:
@@ -1810,7 +1875,7 @@ def render_screen(view: dict[str, object], resources: dict[str, object] | None =
         lines = assemble(compact_challenges=True, include_events=False, include_resources=False, compact_koth=True)
     if len(lines) > height:
         lines = lines[:height]
-    return "\n".join(lines)
+    return "\n".join(truncate(terminal_text(line), max(1, terminal.columns)) for line in lines)
 
 
 def solid_warning_box(message: str, terminal_columns: int) -> list[str]:
@@ -1832,11 +1897,11 @@ def terminal_size_warning_overlays(columns: int, rows: int) -> str:
         for index, line in enumerate(box):
             overlays.append(f"\033[{row + index};{column}H{line}")
 
-    if rows < MIN_TERMINAL_ROWS and rows >= 3:
+    if rows < MIN_TERMINAL_ROWS and rows >= 3 and columns >= 4:
         box = solid_warning_box("HEIGHT TOO SMALL", columns)
         box_width = display_width(box[0])
         place(box, rows - len(box) + 1, max(1, (columns - box_width) // 2 + 1))
-    if columns < MIN_TERMINAL_COLUMNS and rows >= 3:
+    if columns < MIN_TERMINAL_COLUMNS and rows >= 3 and columns >= 4:
         box = solid_warning_box("WIDTH TOO SMALL", columns)
         box_width = display_width(box[0])
         place(box, max(1, (rows - len(box)) // 2 + 1), max(1, columns - box_width + 1))
@@ -1996,7 +2061,7 @@ def configure(path: Path | None) -> None:
             raise ValueError('contest_end requires a timezone')
     KOTH_ENABLED = config.get('koth', False)
     CODEX_ENABLED = config.get('codex_usage', False)
-    helpers = config.get('helpers', [])
+    helpers = config.get('helpers', list(REQUIRED_HELPERS))
     if not isinstance(helpers, list) or any(not isinstance(x, str) or Path(x).name != x for x in helpers):
         raise ValueError('helpers must be a list of file names')
     HELPER_FILES = tuple(helpers)
@@ -2013,11 +2078,12 @@ def diagnose(network: bool) -> int:
     checks = report['checks']
     checks['credentials'] = 'ok' if TOKEN or (USERNAME and PASSWORD) else 'missing'
     try:
-        Monitor.find_helpers()
+        report['helper_sources'] = {name: str(path) for name, path in Monitor.find_helpers().items()}
         checks['helpers'] = 'ok'
     except OSError as error:
         checks['helpers'] = str(error)
     failed = any(v != 'ok' for v in checks.values())
+    report['optional_tools'] = {'tmux': shutil.which('tmux') or 'not installed (only needed for split windows)'}
     if network and not failed:
         client = CTFdClient(BASE_URL, USERNAME, PASSWORD, TOKEN)
         try:
@@ -2027,7 +2093,10 @@ def diagnose(network: bool) -> int:
             checks['login'] = f'failed ({type(error).__name__})'
             failed = True
         if not failed:
-            for label, routes in {'challenges': ('/api/v1/challenges', '/api/v2/challenges'), 'account': ('/api/v1/users/me',), 'team': ('/api/v1/teams/me',), 'scoreboard': ('/api/v1/scoreboard', '/api/v2/scoreboard/full')}.items():
+            endpoints = {'challenges': ('/api/v1/challenges', '/api/v2/challenges'), 'account': ('/api/v1/users/me',), 'scoreboard': ('/api/v1/scoreboard', '/api/v2/scoreboard/full')}
+            if ACCOUNT_MODE == 'teams':
+                endpoints['team'] = ('/api/v1/teams/me',)
+            for label, routes in endpoints.items():
                 try:
                     result = client.request_json_routes(routes)
                     data = result.get('data')
@@ -2038,6 +2107,8 @@ def diagnose(network: bool) -> int:
                             number = data[0]['id']
                             detail = client.request_json_routes((f'/api/v1/challenges/{number}', f'/api/v2/challenges/{number}')).get('data')
                             checks['challenge_detail'] = 'ok' if isinstance(detail, dict) else 'unexpected response'
+                            if checks['challenge_detail'] != 'ok':
+                                failed = True
                         else:
                             checks['challenge_detail'] = 'unverified (no accessible challenges)'
 
@@ -2045,6 +2116,8 @@ def diagnose(network: bool) -> int:
                     checks[label] = f'unverified (HTTP {error.status})'
                 except Exception as error:
                     checks[label] = f'unverified ({type(error).__name__})'
+                if label in {'challenges', 'account', 'team'} and checks[label] != 'ok':
+                    failed = True
             report["selected_routes"] = list(client.selected_routes.values())
     print(json.dumps(report, ensure_ascii=False, indent=2))
     return 1 if failed else 0
@@ -2054,7 +2127,7 @@ def cli() -> int:
     global HEADLESS
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--headless', action='store_true', help='Print JSON status lines without terminal control')
-    parser.add_argument('--version', action='version', version='ctfd-monitor 0.2.0')
+    parser.add_argument('--version', action='version', version=f'ctfd-monitor {__version__}')
     parser.add_argument('--config', type=Path, help='Competition TOML profile')
     parser.add_argument('command', choices=('run', 'doctor', 'probe'), nargs='?', default='run')
     args = parser.parse_args()

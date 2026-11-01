@@ -10,6 +10,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import tarfile
 import threading
 import time
 import unittest
@@ -58,6 +59,12 @@ def interactive_install(root, answers, env):
 
 class InstallerTests(unittest.TestCase):
     def test_clone_setup_run_both_auth_modes_and_failed_reinstall(self):
+        self.check_setup_and_run('checkout')
+
+    def test_sdist_setup_run_both_auth_modes_and_failed_reinstall(self):
+        self.check_setup_and_run('sdist')
+
+    def check_setup_and_run(self, distribution):
         class Handler(BaseHTTPRequestHandler):
             def log_message(self, *args): pass
             def reply(self, status, data):
@@ -93,10 +100,16 @@ class InstallerTests(unittest.TestCase):
         try:
             with tempfile.TemporaryDirectory() as d:
                 root = Path(d)
-                shutil.copytree(REPO / 'src', root / 'src', ignore=shutil.ignore_patterns('__pycache__', '*.egg-info'))
-                for name in ('install.py', 'ctfd-monitor.py', '22.sh', '25.sh'):
-                    if (REPO / name).is_file():
-                        shutil.copy2(REPO / name, root / name)
+                if distribution == 'sdist':
+                    archive=max((REPO/'dist').glob('ctfd_monitor-*.tar.gz'),key=lambda p:p.stat().st_mtime)
+                    with tarfile.open(archive) as package:
+                        package.extractall(root,filter='data')
+                    root=next(root.glob('ctfd_monitor-*'))
+                else:
+                    shutil.copytree(REPO / 'src', root / 'src', ignore=shutil.ignore_patterns('__pycache__', '*.egg-info'))
+                    for name in ('install.py', 'ctfd-monitor.py', '22.sh', '25.sh'):
+                        if (REPO / name).is_file():
+                            shutil.copy2(REPO / name, root / name)
                 env = {k:v for k,v in os.environ.items() if not k.startswith('CTFD_MONITOR_') and k != 'PYTHONPATH'}
                 for mode in ('1', '2'):
                     with self.subTest(mode=mode):

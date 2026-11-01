@@ -35,8 +35,8 @@ def extract(archive: Path, target: Path, max_bytes: int, cancelled=lambda: False
                 if member.is_dir():
                     continue
                 mode = member.external_attr >> 16
-                if stat.S_ISLNK(mode):
-                    raise ValueError('archive links are unsupported')
+                if stat.S_IFMT(mode) not in {0, stat.S_IFREG}:
+                    raise ValueError('archive links and special files are unsupported')
                 with package.open(member) as stream:
                     copy(member.filename, stream, member.file_size)
     else:

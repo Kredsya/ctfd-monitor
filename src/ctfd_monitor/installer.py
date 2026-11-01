@@ -10,8 +10,11 @@ import tempfile
 import urllib.parse
 import urllib.error
 import uuid
+import shutil
 
 from .client import ApiError, CTFdClient
+from .assets import validate_checkout
+from . import __version__
 
 
 def normalize_url(value: str) -> str:
@@ -50,15 +53,15 @@ def verify(client: CTFdClient) -> tuple[dict, str]:
             raise ValueError('문제 목록 API 응답 형식이 올바르지 않습니다.')
         status = '문제 목록 조회 성공'
     except ApiError as error:
-        if error.status == 403:
-            status = '인증 성공. 문제 목록은 현재 접근 제한 상태입니다. 대회 시작 후 다시 확인합니다.'
+        if error.competition_unavailable:
+            status = '인증 성공. 서버가 대회 기간에 따른 접근 제한을 알렸습니다. 문제 공개 여부는 아직 확인하지 못했습니다.'
         else:
             raise
     return user, status
 
 
 def setup(root: Path) -> None:
-    print('CTFd Monitor 0.2.0 설치 — 외부 패키지나 LLM이 필요하지 않습니다.')
+    print(f'CTFd Monitor {__version__} 설치')
     print('인증 정보는 이 컴퓨터의 비공개 파일(0600)에 저장됩니다.')
     print('다시 실행하면 새 연결 검증에 성공한 뒤 기존 설정을 교체합니다.')
     url = normalize_url(input('대회 URL: '))
@@ -79,6 +82,7 @@ def setup(root: Path) -> None:
     print('인증과 API 연결을 확인합니다...')
     user, status = verify(client)
     print(status)
+    validate_checkout(root)
     account_mode = 'teams' if user.get('team_id') else 'users'
     identity = hashlib.sha256(f"{url}:{user['id']}".encode()).hexdigest()[:12]
     local = root / '.ctfd-monitor-local'
@@ -110,9 +114,15 @@ def setup(root: Path) -> None:
     # The profile replacement above is the commit point; earlier credentials stay usable on failure.
     for old in local.glob('credentials-*.json'):
         if old != secret and not old.is_symlink():
-            old.unlink()
+            try:
+                old.unlink()
+            except OSError:
+                print('새 설정은 저장됐지만 이전 인증 파일을 정리하지 못했습니다. .ctfd-monitor-local/의 파일 권한을 확인하세요.')
     print('설치 완료. 실행: python3 ctfd-monitor.py')
     print(f'작업 폴더: {root / "workspace" / identity}')
+    print('문제마다 22.sh(4개 창), 25.sh(10개 창), chall/AGENTS.md를 준비합니다.')
+    if not shutil.which('tmux'):
+        print('창 분할을 사용하려면 tmux를 설치하세요 (Ubuntu/Debian: sudo apt install tmux). 모니터는 바로 실행할 수 있습니다.')
 
 
 def main(root: Path) -> int:

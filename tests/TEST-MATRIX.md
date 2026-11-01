@@ -1,6 +1,6 @@
 # 전체 회귀 검증 기준
 
-기준 구현: v0.2.0 (`3246754`). 이 작업은 테스트 재작성이다. 제품 코드를 수정하거나 실패를 expectedFailure/skip으로 숨기지 않는다. 통과 개수와 제품 완성도를 동일시하지 않는다.
+감사 기준 구현: v0.2.0 (`3246754`), 현재 제품: v0.3.0. 감사에서 드러낸 계약을 유지하며 제품을 수정한다. 실패를 expectedFailure/skip으로 숨기지 않으며 통과 개수와 제품 완성도를 동일시하지 않는다. 수정 전 실패 목록은 [BASELINE.md](BASELINE.md)에 보존한다.
 
 ## 판정 근거
 
@@ -14,6 +14,7 @@
 | 구간 | 조건 | 자동 검사 위치 |
 | --- | --- | --- |
 | 새 clone·배포 | 필수 스크립트 내용·실행 권한, Git 추적, sdist·wheel 포함, 비밀 파일 제외 | test_contract_assets, test_contract_distribution |
+| 실제 배포 사용 | sdist를 풀어 두 인증 방식으로 PTY 설치·실행, 별도 경로에 pip 설치한 wheel에서 checkout 없이 작업 폴더 생성 | test_installer, test_contract_distribution |
 | 설치 입력 | URL 정규화·하위 경로·포트·스킴·빈 값·자격정보 포함 URL, 취소 | test_contract_setup |
 | 설치 저장 | 0600/0700, 잘못된 JSON·스키마·심볼릭 링크, 인증 실패, 저장 도중 디스크 실패, 이전 설정 보존 | test_contract_setup, test_installer |
 | 실제 설치 흐름 | PTY에서 토큰/아이디·비밀번호 입력, 비밀 비표시, 실제 문제/첨부/AGENTS/보조 스크립트 산출물, 기본 실행·종료 | test_installer |
@@ -29,10 +30,11 @@
 | 표시·종료 | 1×1/40×10/80×24/120×60/200×80, 한글·결합문자·이모지, countdown의 잘못된 시간대, 표준 점수판 차이, active/done/error 전송, 사건·badge 만료, 자원 graph 경계, terminal clipboard escape, PTY Ctrl-C, headless SIGTERM | test_contract_runtime, test_installer, test_integration |
 | 보조 스크립트 실행 | 격리된 실제 tmux에서 4/10 pane, 실제 PTY F2/F3 전환·focus 복원, AGENTS/deploy 복사, 재접속 시 작업 보존 | test_contract_helpers_runtime |
 | 선택 통합 | 비활성 시 subprocess 금지, 미지원 KOTH, 4종 adapter의 점수/순위/페이지/라운드 fixture, Codex 바이너리 없음/응답 파싱/자식 종료 | test_contract_optional |
+| v0.3 제품 경계 | 각 자산 누락·빈 파일·권한 오류 시 설정 보존, 사용자 지침·스크립트 우선순위, 저장 함수 실제 도달, 전체 압축 경로 선검사, 재시작 STALE, 일반 403, probe 실패 종료, 기본 화면의 ACDC 지표 제외, 출력 폭·제어문자 | test_v030, test_contract_setup |
 
 ## 기준 스크립트
 
-사용자가 수정한 `/home/kredsya/ctf/22.sh`, `25.sh`의 스냅샷을 `fixtures/original/`에 보관한다. 제품 경로에 파일을 넣지 않고 테스트 기준으로만 사용한다.
+사용자가 수정한 `/home/kredsya/ctf/22.sh`, `25.sh`의 스냅샷을 `fixtures/original/`에 보관한다. v0.3.0은 같은 내용의 파일을 clone 루트와 패키지에 포함한다. fixture는 내용 비교 기준이며 실제 tmux 검사는 배포할 루트 파일을 실행한다.
 
 - 22.sh SHA-256: `a5b7623c614e45e13038d7d54f9dc94fec1d4e797ce1a7ef7a88116a8983b0f1`
 - 25.sh SHA-256: `88aab2ef97e6b5ac3b3e2f8c81aa58e71bfefab2a3126aa96b73a48e79b93f7d`
@@ -52,7 +54,7 @@ python -m coverage xml -o test-results/coverage.xml
 PYTHONPATH=src python3 tests/stock_ctfd_smoke.py  # Docker 필요
 ```
 
-`test-results/results.json`에 테스트 ID·실패 trace·오류·skip을 저장한다. 실패가 하나라도 있으면 종료 코드 1이다. CI는 실패해도 test-evidence artifact를 업로드한다. 기존 v0.2.0 release와 main을 이번 실패 테스트에 맞춰 몰래 바꾸지 않는다.
+`test-results/results.json`에 제품 버전·import된 패키지 경로·커밋·작업 트리 변경 여부·테스트 ID·실패 trace·오류·skip을 저장한다. 실패가 하나라도 있으면 종료 코드 1이다. CI는 실패해도 test-evidence artifact를 업로드한다. 과거 v0.2.0 release와 감사 커밋은 유지한다. 새 태그의 전체 CI 성공을 배포 조건으로 삼는다.
 
 ## 판정 한계
 
@@ -60,7 +62,7 @@ PYTHONPATH=src python3 tests/stock_ctfd_smoke.py  # Docker 필요
 - 공식 CTFd 실서버 검증과 fixture 응답 테스트를 구분한다. KOTH/Codex의 외부 운영 서비스와 실제 계정은 이번 테스트에서 접속하지 않는다.
 - tmux의 실제 F2/F3 키 입력은 검증하지만 마우스 드래그·시스템 클립보드의 사용자 상호작용은 이번 자동 검사로 보장하지 않는다.
 - 단일 프로세스 coverage는 PTY 자식 프로세스의 실행을 합산하지 않는다. 줄 커버리지 100%를 달성하기 위해 단언 없는 호출을 추가하지 않는다.
-- 테스트 실패 목록과 미검사 경계가 남아 있는 동안 “배포 검증 완료”라고 판정하지 않는다.
+- 필수 계약 테스트가 실패하면 배포하지 않는다. 배포 시에도 위의 미검사 범위는 함께 명시한다.
 
 
 ## 테스트 감도 검사

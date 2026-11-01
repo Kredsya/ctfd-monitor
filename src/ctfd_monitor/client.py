@@ -9,6 +9,7 @@ import urllib.request
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from html.parser import HTMLParser
+from . import __version__
 
 
 class ApiError(RuntimeError):
@@ -18,6 +19,13 @@ class ApiError(RuntimeError):
         self.status = status
         self.message = message
         self.code = code
+
+    @property
+    def competition_unavailable(self) -> bool:
+        # HTTP 403 alone also means banned accounts, missing teams, etc.
+        return self.status in {401, 403} and self.code in {
+            'competition_closed', 'competition_not_started', 'competition_ended',
+        }
 
 
 class NonceParser(HTMLParser):
@@ -56,16 +64,21 @@ class CTFdClient:
         self.selected_routes: dict[tuple[str, ...], str] = {}
 
     def request_json(self, path: str, *, method: str = "GET", payload: dict[str, object] | None = None) -> dict[str, object]:
+        target = urllib.parse.urljoin(self.base_url + "/", path.lstrip("/"))
+        origin = urllib.parse.urlsplit(self.base_url)
+        destination = urllib.parse.urlsplit(target)
+        if (destination.scheme, destination.netloc) != (origin.scheme, origin.netloc):
+            raise ValueError("API requests must stay on the configured CTFd origin")
         if time.monotonic() < self.retry_until:
             raise ApiError(path, 429, "waiting for server Retry-After")
         data = None
-        headers = {"Accept": "application/json", "Content-Type": "application/json", "User-Agent": "ctfd-monitor/0.2.0"}
+        headers = {"Accept": "application/json", "Content-Type": "application/json", "User-Agent": f"ctfd-monitor/{__version__}"}
         if self.token:
             headers["Authorization"] = f"Token {self.token}"
         if payload is not None:
             data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
             headers["Content-Type"] = "application/json"
-        request = urllib.request.Request(urllib.parse.urljoin(self.base_url + "/", path.lstrip("/")), data=data, headers=headers, method=method)
+        request = urllib.request.Request(target, data=data, headers=headers, method=method)
         try:
             with self.opener.open(request, timeout=30) as response:
                 try:
@@ -156,7 +169,7 @@ class CTFdClient:
         target = urllib.parse.urljoin(self.base_url + "/", url)
         if urllib.parse.urlsplit(target).scheme not in {"http", "https"}:
             raise ValueError("attachments require an HTTP(S) URL")
-        headers = {"User-Agent": "ctfd-monitor/0.2.0"}
+        headers = {"User-Agent": f"ctfd-monitor/{__version__}"}
         origin = urllib.parse.urlsplit(self.base_url)
         destination = urllib.parse.urlsplit(target)
         if self.token and (origin.scheme, origin.netloc) == (destination.scheme, destination.netloc):

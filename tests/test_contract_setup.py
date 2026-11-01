@@ -3,6 +3,7 @@ import io
 import json
 import os
 import tempfile
+import shutil
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -14,6 +15,9 @@ class SetupContracts(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory(); self.addCleanup(self.temp.cleanup)
         self.root=Path(self.temp.name)
+        repo=Path(__file__).resolve().parents[1]
+        for name in ('22.sh','25.sh'):
+            shutil.copy2(repo/name,self.root/name)
 
     def test_url_matrix(self):
         for given,want in [('ctf.example','https://ctf.example'),('https://ctf.example/','https://ctf.example'),('https://ctf.example/sub/','https://ctf.example/sub'),('http://127.0.0.1:8000','http://127.0.0.1:8000')]:
@@ -55,7 +59,9 @@ class SetupContracts(unittest.TestCase):
         profile=local/'competition.toml'; profile.write_text('old profile')
         old=local/'credentials-old.json'; old.write_text('old secret')
         original=installer.private_write
+        writes=[]
         def fail_commit(path,text):
+            writes.append(path.name)
             if path.name=='competition.toml': raise OSError('disk full')
             return original(path,text)
         with patch('builtins.input',side_effect=['https://ctf.example','1']), patch('getpass.getpass',return_value='new-secret'), patch.object(installer,'verify',return_value=({'id':1},'ok')), patch.object(installer,'private_write',side_effect=fail_commit), contextlib.redirect_stdout(io.StringIO()):
@@ -63,8 +69,10 @@ class SetupContracts(unittest.TestCase):
         self.assertEqual(profile.read_text(),'old profile')
         self.assertEqual(old.read_text(),'old secret')
         self.assertEqual(list(local.glob('credentials-*.json')),[old])
+        self.assertIn('competition.toml',writes, 'The failure must actually reach the commit step')
 
     def test_setup_must_not_report_success_with_missing_required_assets(self):
+        for name in ('22.sh','25.sh'): (self.root/name).unlink()
         output=io.StringIO()
         with patch('builtins.input',side_effect=['https://ctf.example','1']), patch('getpass.getpass',return_value='fixture-secret'), patch.object(installer,'verify',return_value=({'id':1},'ok')), contextlib.redirect_stdout(output):
             self.assertNotEqual(installer.main(self.root),0,'A checkout with neither helper is incomplete')

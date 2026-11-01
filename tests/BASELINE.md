@@ -1,5 +1,7 @@
 # v0.2.0 회귀 검사 결과
 
+이 문서는 `test/full-regression-audit` 브랜치의 **수정 전 기록**이다. v0.3.0의 현재 결과와 혼동하지 않는다. 수정 근거와 새 배포 계약은 [v0.3.0 설계](../docs/v0.3.0-design.md)에 있다.
+
 제품 기준: `3246754` (`v0.2.0`). 테스트 재작성 중 제품 `src/ctfd_monitor/`는 수정하지 않았다.
 
 - 테스트 메서드 실행: 83개
@@ -44,6 +46,6 @@
 
 필수 자산 누락, 첨부 이름 충돌, 빈 대회의 계정 상태 저장 누락, 압축 자기 덮어쓰기, 심볼릭 링크 대상 누락을 완료로 표시하는 문제, 일반 CTFd 점수 비교, 시간대 없는 시각 처리 등을 구분해서 재현한다. 작은 터미널·안전 경계 실패를 모두 원본 대비 회귀로 취급하지 않는다. 세부 기준은 [TEST-MATRIX.md](TEST-MATRIX.md)에 있다.
 
-`python -m build` 후 `python -m coverage run --branch --source=ctfd_monitor tests/run_suite.py`를 실행하면 현재는 종료 코드 1이 정상적인 검사 결과다. `test-results/results.json`에 각 실패의 traceback과 실행 환경이 저장된다. CI의 `test-evidence-*` artifact에도 실패 결과를 보존한다.
+감사 커밋 `aea5148`에서 `python -m build` 후 `python -m coverage run --branch --source=ctfd_monitor tests/run_suite.py`를 실행하면 종료 코드 1로 위 실패를 재현한다. `test-results/results.json`에 각 실패의 traceback과 실행 환경이 저장된다. 당시 CI의 `test-evidence-*` artifact에도 실패 결과를 보존한다.
 
-제품 수정이나 실패 은폐를 하지 않았다. 테스트 브랜치를 main에 병합하거나 새 버전을 배포하지 않는다.
+감사 당시에는 제품 수정이나 실패 은폐를 하지 않았고, 실패한 상태로 main에 병합하거나 새 버전을 배포하지 않았다.

@@ -1,4 +1,4 @@
-"""Execute supplied reference helpers on a private tmux server, never the user's server."""
+"""Execute shipped helpers on a private tmux server, never the user's server."""
 import json
 import fcntl
 import pty
@@ -15,7 +15,7 @@ from pathlib import Path
 from scenarios import REPO
 
 class HelperRuntimeContracts(unittest.TestCase):
-    def test_reference_scripts_create_workers_and_reattach_without_overwriting_work(self):
+    def test_shipped_scripts_create_workers_and_reattach_without_overwriting_work(self):
         tmux=shutil.which('tmux')
         self.assertIsNotNone(tmux,'Install tmux to run the required helper integration gate')
         for name,count in (('22.sh',4),('25.sh',10)):
@@ -24,7 +24,7 @@ class HelperRuntimeContracts(unittest.TestCase):
                 chall=problem/'chall'; (chall/'deploy').mkdir(parents=True)
                 (chall/'AGENTS.md').write_text('reference instructions')
                 (chall/'deploy/data').write_text('provided')
-                script=problem/name; shutil.copy2(REPO/'tests/fixtures/original'/name,script)
+                script=problem/name; shutil.copy2(REPO/name,script)
                 binaries=root/'bin'; binaries.mkdir()
                 wrapper=binaries/'tmux'
                 wrapper.write_text('#!/usr/bin/env python3\nimport os,sys\na=["-f","/dev/null"]+sys.argv[1:]\nif "attach-session" in a: sys.exit(0)\nos.execv('+repr(tmux)+', ['+repr(tmux)+']+a)\n')

@@ -43,3 +43,29 @@ jobs:
         with:
           python-version: '3.12'
       - run: PYTHONPATH=src python tests/stock_ctfd_smoke.py
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [test, stock-ctfd]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist-3.12
+          path: release
+      - name: Verify tag matches product version
+        run: |
+          python3 - <<'PY'
+          import os, tomllib
+          from pathlib import Path
+          version = tomllib.loads(Path('pyproject.toml').read_text())['project']['version']
+          assert os.environ['GITHUB_REF_NAME'] == 'v' + version
+          PY
+      - name: Publish verified distributions
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          (cd release && sha256sum *.whl *.tar.gz > SHA256SUMS)
+          gh release create "$GITHUB_REF_NAME" release/* --verify-tag --title "CTFd Monitor $GITHUB_REF_NAME" --notes-file RELEASE-NOTES.md

@@ -6,6 +6,7 @@ import subprocess
 from pathlib import Path
 import sys
 import unittest
+import ctfd_monitor
 
 ROOT=Path(__file__).resolve().parents[1]
 
@@ -24,6 +25,9 @@ def main():
     result=unittest.TextTestRunner(verbosity=2,resultclass=EvidenceResult).run(suite)
     record={
         'revision':subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip(),
+        'working_tree_dirty':bool(subprocess.check_output(['git','status','--porcelain'],cwd=ROOT,text=True).strip()),
+        'product_version':ctfd_monitor.__version__,
+        'imported_package':ctfd_monitor.__file__,
         'python':sys.version,
         'platform':platform.platform(),
         'tests_run':result.testsRun,
